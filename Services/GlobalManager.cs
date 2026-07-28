@@ -8,10 +8,12 @@ internal class GlobalManager : IDisposable
 {
     private AppConfig? appConfig;
     private bool disposed = false;
+    private List<ServerManager> serverManagers;
 
     public GlobalManager()
     {
         appConfig = LoadConfig();
+        serverManagers = new List<ServerManager>(appConfig.ServerPaths.Count);
     }
 
     public void Dispose()

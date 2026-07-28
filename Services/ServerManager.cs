@@ -1,16 +1,16 @@
-﻿using System;
-using System.Collections.Generic;
-using System.Text;
-using System.Text.Json;
-using System.Text.Json.Serialization;
-using System.IO;
+﻿using MSL_CLI.Models;
 
 namespace MSL_CLI.Services;
 
 internal class ServerManager
 {
-    ulong? UUID { get; set; }
-    public string? Name { get; private set; }
-
-
+    private readonly GlobalManager _globalManager;
+    private ServerConfig serverConfig;
+    private string serverPath;
+    public ServerManager(GlobalManager globalManager,string filePath)
+    {
+        _globalManager = globalManager;
+        serverPath = filePath;
+        serverConfig = new ServerConfig(filePath);
+    }
 }
