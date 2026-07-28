@@ -5,17 +5,19 @@ namespace MSL_CLI;
 
 internal class AIConfig
 {
-    public string Url = string.Empty;
-    public string Model = string.Empty;
-    public string? ApiKey;
-    public string? ApiKeyEnv;
+    public string Url { get; set; } = string.Empty;
+    public string Model { get; set; } = string.Empty;
+    public string? ApiKey { get; set; }
+    public string? ApiKeyEnv { get; set; }
 }
+
 internal class AppConfig
 {
-    public bool EnableAI = true;
-    public Dictionary<string, AIConfig> AIConfigs = new();
-    public Dictionary<string, string> ServerPaths = new();
+    public bool EnableAI { get; set; } = true;
+    public Dictionary<string, AIConfig> AIConfigs { get; set; } = new();
+    public Dictionary<string, string> ServerPaths { get; set; } = new();
 }
+
 internal static class AppConstants
 {
     public static readonly string AppName = "MSL_CLI";
@@ -29,18 +31,77 @@ internal static class AppConstants
     };
     public static readonly JsonSerializerOptions ReadOptions = new()
     {
-        WriteIndented = true,
-        DefaultIgnoreCondition = JsonIgnoreCondition.WhenWritingNull,
-        Encoder = System.Text.Encodings.Web.JavaScriptEncoder.UnsafeRelaxedJsonEscaping
+        PropertyNameCaseInsensitive = true,
+        AllowTrailingCommas = true,
+        ReadCommentHandling = JsonCommentHandling.Skip
     };
 }
-class GlobalManager
+
+class GlobalManager : IDisposable
 {
-    private AppConfig appConfig;
+    private AppConfig? appConfig;
+    private bool disposed = false;
+
     public GlobalManager()
     {
         appConfig = LoadConfig();
     }
+
+    public void Dispose()
+    {
+        Dispose(true);
+        GC.SuppressFinalize(this);
+    }
+
+    protected virtual void Dispose(bool disposing)
+    {
+        if (disposed) return;
+
+        if (disposing)
+        {
+            if (appConfig != null)
+            {
+                try
+                {
+                    SaveConfig(appConfig);
+                }
+                catch (Exception ex)
+                {
+                    Console.Error.WriteLine($"[GlobalManager.Dispose] 保存配置失败: {ex.Message}");
+                }
+            }
+        }
+
+        // 非托管资源释放在这里（本例没有）
+        disposed = true;
+    }
+
+    ~GlobalManager()
+    {
+        Dispose(false);
+    }
+
+    public void PrintConfig()
+    {
+        if (appConfig == null)
+        {
+            Console.WriteLine("配置未加载");
+            return;
+        }
+
+        Console.WriteLine("EnableAI: " + appConfig.EnableAI);
+        Console.WriteLine("AIConfigs:");
+        foreach (var kvp in appConfig.AIConfigs)
+        {
+            Console.WriteLine($"  {kvp.Key}: Url={kvp.Value.Url}, Model={kvp.Value.Model}, ApiKey={(kvp.Value.ApiKey != null ? "****" : "null")}, ApiKeyEnv={kvp.Value.ApiKeyEnv}");
+        }
+        Console.WriteLine("ServerPaths:");
+        foreach (var kvp in appConfig.ServerPaths)
+        {
+            Console.WriteLine($"  {kvp.Key}: {kvp.Value}");
+        }
+    }
+
     private static AppConfig LoadConfig()
     {
         string userConfigPath = GetUserConfigPath();
@@ -66,6 +127,7 @@ class GlobalManager
         SaveConfig(defaultConfig);
         return defaultConfig;
     }
+
     private static void SaveConfig(AppConfig config)
     {
         string userConfigPath = GetUserConfigPath();
@@ -74,7 +136,14 @@ class GlobalManager
         {
             string json = JsonSerializer.Serialize(config, AppConstants.WriteOptions);
             File.WriteAllText(tempPath, json);
-            File.Replace(tempPath, userConfigPath, null);
+            if (File.Exists(userConfigPath))
+            {
+                File.Replace(tempPath, userConfigPath, null);
+            }
+            else
+            {
+                File.Move(tempPath, userConfigPath);
+            }
         }
         finally
         {
@@ -84,6 +153,7 @@ class GlobalManager
             }
         }
     }
+
     private static string GetUserConfigPath()
     {
         string appDataPath = Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData);
@@ -110,11 +180,22 @@ class GlobalManager
             }
             catch (JsonException)
             {
-                // 默认配置文件也损坏，回退到硬编码兜底值
+                // 默认配置文件也损坏，回退
             }
         }
-
-        // 硬编码兜底默认值（确保程序在任何情况下都能启动）
-        return new AppConfig();
+        var defaultCfg = new AppConfig();
+        try
+        {
+            string json = JsonSerializer.Serialize(defaultCfg, AppConstants.WriteOptions);
+            string? dir = Path.GetDirectoryName(defaultConfigPath);
+            if (!string.IsNullOrEmpty(dir)) Directory.CreateDirectory(dir);
+            File.WriteAllText(defaultConfigPath, json);
+            return defaultCfg;
+        }
+        catch
+        {
+            // 创建失败（例如无写权限），回退
+        }
+        return defaultCfg;
     }
 }

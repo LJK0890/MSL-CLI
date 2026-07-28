@@ -7,6 +7,8 @@ public class MSL_CLI
 {
     public static void Main(string[] args)
     {
-        Console.WriteLine("Hell World!");
+        using GlobalManager globalManager = new GlobalManager();
+        globalManager.PrintConfig();
+
     }
 }
