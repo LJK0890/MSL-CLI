@@ -5,7 +5,7 @@ using System.Text.Json;
 using System.Text.Json.Serialization;
 using System.IO;
 
-namespace MSL_CLI;
+namespace MSL_CLI.Services;
 
 internal class ServerManager
 {
