@@ -9,6 +9,5 @@ public class MSL_CLI
     {
         using GlobalManager globalManager = new GlobalManager();
         globalManager.PrintConfig();
-
     }
 }
