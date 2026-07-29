@@ -1,19 +1,38 @@
 ﻿using System.Text.Json;
-
+using static MSL_CLI.IO.IO;
 using MSL_CLI.Models;
 
 namespace MSL_CLI.Services;
 
+/// <summary>
+/// 全局管理器，负责加载/保存应用程序配置，并管理所有 ServerManager 实例。
+/// </summary>
 internal class GlobalManager : IDisposable
 {
     private AppConfig? appConfig;
     private bool disposed = false;
-    private List<ServerManager> serverManagers;
+    private Dictionary<string, ServerManager> serverManagers;
+
+    // 引入配置服务
+    private readonly ConfigService _configService;
 
     public GlobalManager()
     {
-        appConfig = LoadConfig();
-        serverManagers = new List<ServerManager>(appConfig.ServerPaths.Count);
+        // 初始化服务
+        _configService = new ConfigService();
+
+        // 加载配置
+        appConfig = _configService.LoadConfig();
+
+        // 初始化业务逻辑
+        serverManagers = new Dictionary<string, ServerManager>();
+        foreach (var serverPathKV in appConfig.ServerPaths)
+        {
+            var serverManager = new ServerManager(serverPathKV.Key, serverPathKV.Value);
+            serverManagers.Add(serverPathKV.Key, serverManager);
+        }
+
+        Output.Print("Global/Config", LogLevel.INFO, $"已加载配置，包含 {appConfig.ServerPaths.Count} 个服务器路径。", includeTimestamp: true);
     }
 
     public void Dispose()
@@ -32,11 +51,13 @@ internal class GlobalManager : IDisposable
             {
                 try
                 {
-                    SaveConfig(appConfig);
+                    // 委托给服务保存
+                    _configService.SaveConfig(appConfig);
+                    Output.Print("Global/Config", LogLevel.INFO, "配置已保存。", includeTimestamp: true);
                 }
                 catch (Exception ex)
                 {
-                    Console.Error.WriteLine($"[GlobalManager.Dispose] 保存配置失败: {ex.Message}");
+                    Output.Print("Global/Config", LogLevel.ERROR, $"保存配置失败: {ex.Message}", includeTimestamp: true);
                 }
             }
         }
@@ -48,132 +69,40 @@ internal class GlobalManager : IDisposable
         Dispose(false);
     }
 
+    /// <summary>
+    /// 打印当前配置到控制台（用于调试）。
+    /// </summary>
     public void PrintConfig()
     {
         if (appConfig == null)
         {
-            Console.WriteLine("配置未加载");
+            Output.Print("Global/Config", LogLevel.INFO, "配置未加载", includeTimestamp: true);
             return;
         }
-
-        Console.WriteLine("EnableAI: " + appConfig.EnableAI);
-        Console.WriteLine("AIConfigs:");
+        Output.Print("Global/Config", LogLevel.INFO, "EnableAI: " + appConfig.EnableAI, includeTimestamp: true);
+        Output.Print("Global/Config", LogLevel.INFO, "AIConfigs:", includeTimestamp: true);
         foreach (var kvp in appConfig.AIConfigs)
         {
-            string keyDisplay = string.IsNullOrEmpty(kvp.Value.ApiKey)
-                ? "(empty)"
-                : "****";
-
-            Console.WriteLine($"  {kvp.Key}:");
-            Console.WriteLine($"    Url={kvp.Value.Url}");
-            Console.WriteLine($"    Model={kvp.Value.Model}");
-            Console.WriteLine($"    ApiKey={keyDisplay}");
-            Console.WriteLine($"    UseApiKeyEnv={kvp.Value.UseApiKeyEnv}");
-            Console.WriteLine($"    ApiKeyEnv={kvp.Value.ApiKeyEnv}");
+            string keyDisplay = string.IsNullOrEmpty(kvp.Value.ApiKey) ? "(empty)" : "****";
+            Output.Print("Global/AI", LogLevel.INFO, $" {kvp.Key}:", includeTimestamp: true);
+            Output.Print("Global/AI", LogLevel.INFO, $" Url={kvp.Value.Url}", includeTimestamp: true);
+            Output.Print("Global/AI", LogLevel.INFO, $" Model={kvp.Value.Model}", includeTimestamp: true);
+            Output.Print("Global/AI", LogLevel.INFO, $" ApiKey={keyDisplay}", includeTimestamp: true);
+            Output.Print("Global/AI", LogLevel.INFO, $" UseApiKeyEnv={kvp.Value.UseApiKeyEnv}", includeTimestamp: true);
+            Output.Print("Global/AI", LogLevel.INFO, $" ApiKeyEnv={kvp.Value.ApiKeyEnv}", includeTimestamp: true);
         }
-        Console.WriteLine("ServerPaths:");
+        Output.Print("Global/Config", LogLevel.INFO, "ServerPaths:", includeTimestamp: true);
         foreach (var kvp in appConfig.ServerPaths)
         {
-            Console.WriteLine($"  {kvp.Key}: {kvp.Value}");
+            Output.Print("Global/Config", LogLevel.INFO, $" {kvp.Key}: {kvp.Value}", includeTimestamp: true);
         }
     }
 
-    private static AppConfig LoadConfig()
+    public void MainLoop()
     {
-        string userConfigPath = GetUserConfigPath();
-        if (File.Exists(userConfigPath))
+        while (true)
         {
-            try
-            {
-                string json = File.ReadAllText(userConfigPath);
-                AppConfig? config = JsonSerializer.Deserialize<AppConfig>(json, AppConstants.ReadOptions);
-                if (config != null)
-                {
-                    return config;
-                }
-            }
-            catch (JsonException)
-            {
-                string backupPath = userConfigPath + ".bak";
-                try { File.Copy(userConfigPath, backupPath, overwrite: true); } catch { /* 忽略备份失败 */ }
-            }
-        }
 
-        string defaultConfigPath = GetDefaultConfigPath();
-        AppConfig defaultConfig = LoadDefaultConfig(defaultConfigPath);
-        SaveConfig(defaultConfig);
-        return defaultConfig;
-    }
-
-    private static void SaveConfig(AppConfig config)
-    {
-        string userConfigPath = GetUserConfigPath();
-        string tempPath = userConfigPath + ".tmp";
-        try
-        {
-            string json = JsonSerializer.Serialize(config, AppConstants.WriteOptions);
-            File.WriteAllText(tempPath, json);
-            if (File.Exists(userConfigPath))
-            {
-                File.Replace(tempPath, userConfigPath, null);
-            }
-            else
-            {
-                File.Move(tempPath, userConfigPath);
-            }
         }
-        finally
-        {
-            if (File.Exists(tempPath))
-            {
-                try { File.Delete(tempPath); } catch { /* 忽略 */ }
-            }
-        }
-    }
-
-    private static string GetUserConfigPath()
-    {
-        string appDataPath = Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData);
-        string configDir = Path.Combine(appDataPath, AppConstants.AppName);
-        Directory.CreateDirectory(configDir);
-        return Path.Combine(configDir, AppConstants.ConfigFileName);
-    }
-
-    private static string GetDefaultConfigPath()
-    {
-        string baseDir = AppContext.BaseDirectory;
-        return Path.Combine(baseDir, AppConstants.DefaultConfigFileName);
-    }
-
-    private static AppConfig LoadDefaultConfig(string defaultConfigPath)
-    {
-        if (File.Exists(defaultConfigPath))
-        {
-            try
-            {
-                string json = File.ReadAllText(defaultConfigPath);
-                AppConfig? config = JsonSerializer.Deserialize<AppConfig>(json, AppConstants.ReadOptions);
-                if (config != null) return config;
-            }
-            catch (JsonException)
-            {
-                // 默认配置文件也损坏，回退
-            }
-        }
-
-        var defaultCfg = new AppConfig();
-        try
-        {
-            string json = JsonSerializer.Serialize(defaultCfg, AppConstants.WriteOptions);
-            string? dir = Path.GetDirectoryName(defaultConfigPath);
-            if (!string.IsNullOrEmpty(dir)) Directory.CreateDirectory(dir);
-            File.WriteAllText(defaultConfigPath, json);
-            return defaultCfg;
-        }
-        catch
-        {
-            // 创建失败（例如无写权限），回退
-        }
-        return defaultCfg;
     }
 }

@@ -1,31 +1,49 @@
-﻿using System.Formats.Tar;
-using System.Reflection.Metadata;
-using System.Runtime.InteropServices;
-using System.Text;
+﻿using System.Text;
 using System.Text.RegularExpressions;
+using System.Runtime.InteropServices;
+using static MSL_CLI.IO.IO;
 
 namespace MSL_CLI.Models;
 
+/// <summary>
+/// 负责解析 Minecraft 服务器启动脚本（run.bat/run.sh）中的参数，
+/// 提取 Java 路径、JVM 参数、jar 参数等。
+/// </summary>
 internal class ServerArgument
 {
     private string javaPath = "java";
     private string userJvmArgs = "-Xms2500M -Xmx4G";
     private string jarArgs = "-jar server.jar";
     private string appendArgs = "nogui";
+    private string name;
 
-    public ServerArgument(string filePath)
+    /// <summary>
+    /// 构造函数，解析指定服务器目录下的启动脚本。
+    /// </summary>
+    /// <param name="filePath">服务器根目录路径</param>
+    public ServerArgument(string name, string filePath)
     {
-        // 1. 读取 run.bat 或 run.sh（根据平台选择）
-        string runFile = Path.Combine(filePath, RuntimeInformation.IsOSPlatform(OSPlatform.Windows)?"run.bat":"run.sh");
-        if (!File.Exists(runFile)) { return; }
-        // 2. 读取 run.bat 或 run.sh 的内容，提取默认参数
+        this.name = name;
+        // 1. 根据操作系统选择对应的启动脚本文件名
+        string runFile = Path.Combine(filePath, RuntimeInformation.IsOSPlatform(OSPlatform.Windows) ? "run.bat" : "run.sh");
+        Output.Print($"{name}/Argument", LogLevel.INFO, $"尝试读取启动脚本: {runFile}", includeTimestamp: true);
+        if (!File.Exists(runFile))
+        {
+            Output.Print($"{name}/Argument", LogLevel.WARNING, $"启动脚本不存在，使用默认参数。", includeTimestamp: true);
+            return;
+        }
+
+        // 2. 读取脚本内容
         string defaultArgsWithREM = File.ReadAllText(runFile, Encoding.UTF8);
-        if (string.IsNullOrWhiteSpace(defaultArgsWithREM)) {  return; }
+        if (string.IsNullOrWhiteSpace(defaultArgsWithREM))
+        {
+            Output.Print($"{name}/Argument", LogLevel.WARNING, $"启动脚本内容为空，使用默认参数。", includeTimestamp: true);
+            return;
+        }
 
-
-        // 3. 提取有效启动参数（忽略nogui）
+        // 3. 查找以 '"' 或 "java" 开头的行（实际启动命令）
         string defaultArgsWithJAVA = string.Empty;
-        foreach(var line in defaultArgsWithREM.Split('\n'))
+        foreach (var line in defaultArgsWithREM.Split('\n'))
         {
             string trimmed = line.Trim();
             if (trimmed.StartsWith("\"") || trimmed.StartsWith("java"))
@@ -34,29 +52,48 @@ internal class ServerArgument
                 break;
             }
         }
-        if (string.IsNullOrWhiteSpace(defaultArgsWithJAVA)) { return; }
-        // 4. 提取并去除 java 路径（第一个token）
+        if (string.IsNullOrWhiteSpace(defaultArgsWithJAVA))
+        {
+            Output.Print($"{name}/Argument", LogLevel.WARNING, $"未能找到 java 启动行，使用默认参数。", includeTimestamp: true);
+            return;
+        }
+        Output.Print($"{name}/Argument", LogLevel.INFO, $"找到启动命令行: {defaultArgsWithJAVA}", includeTimestamp: true);
+
+        // 4. 提取 java 可执行文件路径（第一个 token）
         string pattern = @"^(\s*)(""[^""]*""|\S+)\s*";
         Match match = Regex.Match(defaultArgsWithJAVA, pattern);
-        if (!match.Success) { return; }
-        string defaultArgsWithJar = defaultArgsWithJAVA.Substring(match.Index + match.Length);
+        if (!match.Success)
+        {
+            Output.Print($"{name}/Argument", LogLevel.WARNING, $"无法解析 java 路径，使用默认参数。", includeTimestamp: true);
+            return;
+        }
+        string defaultArgsWithJar = defaultArgsWithJAVA.Substring(match.Length);
         string javaPathWithQuotes = match.Groups[2].Value;
         javaPath = javaPathWithQuotes.StartsWith("\"") && javaPathWithQuotes.EndsWith("\"")
             ? javaPathWithQuotes.Trim('"')
             : javaPathWithQuotes;
-        // 5. 按空格分词，提取参数
+        Output.Print($"{name}/Argument", LogLevel.INFO, $"Java 路径: {javaPath}", includeTimestamp: true);
+
+        // 5. 按空格分词（保留引号内的空格）
         List<string> tokens = Tokenize(defaultArgsWithJar);
-        if (tokens.Count == 0) { return; }
-        // 6. 内部展开 @ 文件（排除 @win_args.txt / @unix_args.txt）
-        tokens = ExpandAtFiles(filePath, tokens);
-        // 7. 找到 -jar 的位置
-        int jarIndex = -1;
-        for (int i = 1; i < tokens.Count; i++)
+        if (tokens.Count == 0)
         {
-            if (tokens[i].StartsWith("-jar"))
+            Output.Print($"{name}/Argument", LogLevel.WARNING, $"参数分词结果为空，使用默认参数。", includeTimestamp: true);
+            return;
+        }
+
+        // 6. 展开 @ 文件（例如 @libraries.txt），但排除 @win_args.txt / @unix_args.txt
+        tokens = ExpandAtFiles(filePath, tokens);
+        Output.Print($"{name}/Argument", LogLevel.INFO, $"展开 @ 文件后共有 {tokens.Count} 个 token。", includeTimestamp: true);
+
+        // 7. 定位 -jar 参数及其后紧跟的 jar 文件名
+        int jarIndex = -1;
+        for (int i = 0; i < tokens.Count; i++)
+        {
+            if (tokens[i].StartsWith("-jar="))
             {
                 jarIndex = i;
-                jarArgs = $"-jar {tokens[i + 1]}";
+                jarArgs = tokens[i];
                 break;
             }
             else if (tokens[i].StartsWith("@"))
@@ -65,9 +102,24 @@ internal class ServerArgument
                 jarArgs = tokens[i];
                 break;
             }
+            else if (tokens[i].Equals("-jar", StringComparison.OrdinalIgnoreCase))
+            {
+                if (i + 1 >= tokens.Count)
+                {
+                    Output.Print($"{name}/Argument", LogLevel.WARNING, $"-jar 后缺少文件名，使用默认参数。", includeTimestamp: true);
+                    return;
+                }
+                jarArgs = tokens[i] + " " + tokens[i + 1];
+            }
         }
-        if (jarIndex == -1) { return; }
-        // 8. 提取 java 和 -jar 之间的所有 token 作为 JVM 参数
+        if (jarIndex == -1)
+        {
+            Output.Print($"{name}/Argument", LogLevel.WARNING, $"未找到 -jar 参数，使用默认参数。", includeTimestamp: true);
+            return;
+        }
+        Output.Print($"{name}/Argument", LogLevel.INFO, $"找到 -jar 参数: {jarArgs}", includeTimestamp: true);
+
+        // 8. 提取 -jar 之前的所有 token 作为 JVM 参数（排除 % 开头的变量和 nogui）
         var jvmTokens = new List<string>();
         for (int i = 0; i < jarIndex; i++)
         {
@@ -77,14 +129,23 @@ internal class ServerArgument
                 break;
             jvmTokens.Add(tokens[i]);
         }
-        if (jvmTokens.Count <= 0) { return; }
-        userJvmArgs = string.Join(" ", jvmTokens);
+        if (jvmTokens.Count > 0)
+        {
+            userJvmArgs = string.Join(" ", jvmTokens);
+            Output.Print($"{name}/Argument", LogLevel.INFO, $"JVM 参数: {userJvmArgs}", includeTimestamp: true);
+        }
+        else
+        {
+            Output.Print($"{name}/Argument", LogLevel.INFO, $"未提取到 JVM 参数，使用默认值。", includeTimestamp: true);
+        }
     }
 
+    /// <summary>
+    /// 递归展开 @ 文件引用的内容（仅当文件存在且不是排除列表中的文件）。
+    /// </summary>
     private List<string> ExpandAtFiles(string filePath, List<string> tokens)
     {
         var expanded = new List<string>();
-
         foreach (string token in tokens)
         {
             if (token.StartsWith("@"))
@@ -96,19 +157,35 @@ internal class ServerArgument
                     fileName.EndsWith("unix_args.txt", StringComparison.OrdinalIgnoreCase))
                 {
                     expanded.Add(token);
+                    Output.Print($"{name}/Argument", LogLevel.INFO, $"保留排除文件: {token}", includeTimestamp: true);
                     continue;
                 }
-
-                // 内部展开：读取文件内容并按空格分词
                 string atFilePath = Path.Combine(filePath, fileName);
                 if (File.Exists(atFilePath))
                 {
                     string atContent = File.ReadAllText(atFilePath, Encoding.UTF8).Trim();
                     if (!string.IsNullOrEmpty(atContent))
                     {
-                        // 递归分词（@文件内容本身也可能包含 @ 引用，按需决定是否递归）
-                        expanded.AddRange(Tokenize(atContent));
+                        List<string> lines = new List<string>();
+                        foreach(string line in atContent.Split(new[] { '\n' })){
+                            if (!string.IsNullOrEmpty(line)  && !line.StartsWith("#"))
+                            {
+                                lines.Add(line);
+                            }
+                        }
+                        var subTokens = Tokenize(string.Join(" ",lines));
+                        expanded.AddRange(subTokens);
+                        Output.Print($"{name}/Argument", LogLevel.INFO, $"展开 @{fileName}，得到 {subTokens.Count} 个子 token。", includeTimestamp: true);
                     }
+                    else
+                    {
+                        Output.Print($"{name}/Argument", LogLevel.INFO, $"@{fileName} 文件内容为空，忽略。", includeTimestamp: true);
+                    }
+                }
+                else
+                {
+                    Output.Print($"{name}/Argument", LogLevel.INFO, $"@{fileName} 文件不存在，保留原 token。", includeTimestamp: true);
+                    expanded.Add(token);
                 }
             }
             else
@@ -116,27 +193,26 @@ internal class ServerArgument
                 expanded.Add(token);
             }
         }
-
         return expanded;
     }
 
-    private static List<string> Tokenize(string input)
+    /// <summary>
+    /// 将输入字符串按空格分词，支持双引号包围的字符串作为一个整体。
+    /// </summary>
+    private List<string> Tokenize(string input)
     {
         var tokens = new List<string>();
         var current = new StringBuilder();
         bool inQuotes = false;
-
         for (int i = 0; i < input.Length; i++)
         {
             char c = input[i];
-
             if (c == '"')
             {
                 inQuotes = !inQuotes;
                 continue;
             }
-
-            if ((c == ' ' || c == '\t') && !inQuotes)
+            if ((c == ' ' || c == '\t' || c == '\n') && !inQuotes)
             {
                 if (current.Length > 0)
                 {
@@ -145,25 +221,30 @@ internal class ServerArgument
                 }
                 continue;
             }
-
             current.Append(c);
         }
-
         if (current.Length > 0)
             tokens.Add(current.ToString());
-
         return tokens;
     }
+
+    /// <summary>
+    /// 获取完整的启动参数字符串。
+    /// </summary>
     public string GetStartArguments()
     {
         return $"{javaPath} {userJvmArgs} {jarArgs} {appendArgs}".Trim();
     }
+
+    /// <summary>
+    /// 打印所有解析出的参数（用于调试）。
+    /// </summary>
     public void PrintArguments()
     {
-        Console.WriteLine("Java Path: " + javaPath);
-        Console.WriteLine("User JVM Args: " + userJvmArgs);
-        Console.WriteLine("Jar Args: " + jarArgs);
-        Console.WriteLine("Append Args: " + appendArgs);
-        Console.WriteLine("Full Start Arguments: " + GetStartArguments());
+        Output.Print($"{name}/Argument", LogLevel.INFO, $"Java Path: {javaPath}", includeTimestamp: true);
+        Output.Print($"{name}/Argument", LogLevel.INFO, $"User JVM Args: {userJvmArgs}", includeTimestamp: true);
+        Output.Print($"{name}/Argument", LogLevel.INFO, $"Jar Args: {jarArgs}", includeTimestamp: true);
+        Output.Print($"{name}/Argument", LogLevel.INFO, $"Append Args: {appendArgs}", includeTimestamp: true);
+        Output.Print($"{name}/Argument", LogLevel.INFO, $"Full Start Arguments: {GetStartArguments()}", includeTimestamp: true);
     }
 }

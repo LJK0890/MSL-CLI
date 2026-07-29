@@ -1,15 +1,17 @@
-﻿using System;
-using System.Collections.Generic;
-using System.Text;
+﻿using MSL_CLI.IO;
 using MSL_CLI.Models;
 using MSL_CLI.Services;
+using System;
+using System.IO;
 
 namespace MSL_CLI;
-public class MSL_CLI
+
+public class TestProgram
 {
-    public static void Main(string[] args)
+    public static int Main(string[] args)
     {
-        ServerArgument serverArgument = new ServerArgument("D:\\games\\minecraft\\server\\versions\\CTI");
-        serverArgument.PrintArguments();
+        using var globalManager = new GlobalManager();
+        globalManager.MainLoop();
+        return 0;
     }
 }
