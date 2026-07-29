@@ -1,9 +1,4 @@
-﻿using System;
-using System.Collections.Concurrent;
-using System.Text;
-using System.Threading;
-
-namespace MSL_CLI.IO;
+﻿namespace MSL_CLI.IO;
 
 /// <summary>
 /// 日志级别定义及颜色样式
@@ -55,8 +50,15 @@ public static class IO
     }
 
     // 全局输出实例（线程安全）
-    public static ConsoleO Output { get; private set; } = new ConsoleO();
+    public static ConsoleO COStream { get; private set; } = new ConsoleO();
+    public static LogO LOStream { get; private set; } = new LogO();
+    public static void Print(string context, IO.LogLevel level, string message, bool includeTimestamp = true)
+    {
+        LOStream.Log(context, level, message, includeTimestamp);
+        COStream.Print(context, level, message, includeTimestamp);
+    }
 
     // 全局输入实例（线程安全）
-    public static ConsoleI Input { get; private set; } = new ConsoleI();
+    public static ConsoleI CIStream { get; private set; } = new ConsoleI();
+    public static bool Scan(out List<string> lines) => CIStream.TryRead(out lines);
 }

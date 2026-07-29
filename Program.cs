@@ -8,10 +8,9 @@ namespace MSL_CLI;
 
 public class TestProgram
 {
-    public static int Main(string[] args)
+    public static async Task Main(string[] args)
     {
         using var globalManager = new GlobalManager();
-        globalManager.MainLoop();
-        return 0;
+        await globalManager.MainLoop();
     }
 }

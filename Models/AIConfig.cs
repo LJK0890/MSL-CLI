@@ -54,7 +54,7 @@ internal class AIConfigConverter : JsonConverter<AIConfig>
         if (config.UseApiKeyEnv && !string.IsNullOrEmpty(config.ApiKeyEnv))
         {
             config.ApiKey = Environment.GetEnvironmentVariable(config.ApiKeyEnv) ?? string.Empty;
-            Output.Print("Global/AI", LogLevel.INFO, $"从环境变量 '{config.ApiKeyEnv}' 读取 ApiKey ({(string.IsNullOrEmpty(config.ApiKey) ? "失败" : "成功")})", includeTimestamp: true);
+            Print("Global/AI", LogLevel.INFO, $"从环境变量 '{config.ApiKeyEnv}' 读取 ApiKey ({(string.IsNullOrEmpty(config.ApiKey) ? "失败" : "成功")})", includeTimestamp: true);
         }
 
         return config;

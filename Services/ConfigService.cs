@@ -23,7 +23,7 @@ internal class ConfigService
     /// </summary>
     public AppConfig LoadConfig()
     {
-        Output.Print("Global/Config", LogLevel.INFO, $"尝试从用户配置加载: {_userConfigPath}", includeTimestamp: true);
+        Print("Global/Config", LogLevel.INFO, $"尝试从用户配置加载: {_userConfigPath}", includeTimestamp: true);
 
         // 1. 尝试加载用户配置
         if (File.Exists(_userConfigPath))
@@ -34,24 +34,24 @@ internal class ConfigService
                 AppConfig? config = JsonSerializer.Deserialize<AppConfig>(json, AppConstants.ReadOptions);
                 if (config != null)
                 {
-                    Output.Print("Global/Config", LogLevel.INFO, "用户配置加载成功。", includeTimestamp: true);
+                    Print("Global/Config", LogLevel.INFO, "用户配置加载成功。", includeTimestamp: true);
                     return config;
                 }
             }
             catch (JsonException ex)
             {
-                Output.Print("Global/Config", LogLevel.ERROR, $"用户配置 JSON 解析失败: {ex.Message}，将尝试备份并重建。", includeTimestamp: true);
+                Print("Global/Config", LogLevel.ERROR, $"用户配置 JSON 解析失败: {ex.Message}，将尝试备份并重建。", includeTimestamp: true);
                 BackupCorruptedConfig(_userConfigPath);
             }
         }
 
         // 2. 加载或创建默认配置
-        Output.Print("Global/Config", LogLevel.INFO, $"尝试加载默认配置: {_defaultConfigPath}", includeTimestamp: true);
+        Print("Global/Config", LogLevel.INFO, $"尝试加载默认配置: {_defaultConfigPath}", includeTimestamp: true);
         AppConfig defaultConfig = LoadOrCreateDefaultConfig();
 
         // 自动保存一份新的用户配置
         SaveConfig(defaultConfig);
-        Output.Print("Global/Config", LogLevel.INFO, "已创建并保存新的用户配置。", includeTimestamp: true);
+        Print("Global/Config", LogLevel.INFO, "已创建并保存新的用户配置。", includeTimestamp: true);
 
         return defaultConfig;
     }
@@ -78,11 +78,11 @@ internal class ConfigService
             {
                 File.Move(tempPath, _userConfigPath);
             }
-            Output.Print("Global/Config", LogLevel.INFO, $"配置已保存到 {_userConfigPath}", includeTimestamp: true);
+            Print("Global/Config", LogLevel.INFO, $"配置已保存到 {_userConfigPath}", includeTimestamp: true);
         }
         catch (Exception ex)
         {
-            Output.Print("Global/Config", LogLevel.ERROR, $"保存配置失败: {ex.Message}", includeTimestamp: true);
+            Print("Global/Config", LogLevel.ERROR, $"保存配置失败: {ex.Message}", includeTimestamp: true);
             throw; // 重新抛出异常以便调用者知道保存失败
         }
         finally
@@ -116,13 +116,13 @@ internal class ConfigService
                 AppConfig? config = JsonSerializer.Deserialize<AppConfig>(json, AppConstants.ReadOptions);
                 if (config != null)
                 {
-                    Output.Print("Global/Config", LogLevel.INFO, "默认配置加载成功。", includeTimestamp: true);
+                    Print("Global/Config", LogLevel.INFO, "默认配置加载成功。", includeTimestamp: true);
                     return config;
                 }
             }
             catch (JsonException ex)
             {
-                Output.Print("Global/Config", LogLevel.ERROR, $"默认配置解析失败: {ex.Message}，将创建空默认配置。", includeTimestamp: true);
+                Print("Global/Config", LogLevel.ERROR, $"默认配置解析失败: {ex.Message}，将创建空默认配置。", includeTimestamp: true);
             }
         }
 
@@ -133,11 +133,11 @@ internal class ConfigService
             string? dir = Path.GetDirectoryName(_defaultConfigPath);
             if (!string.IsNullOrEmpty(dir)) Directory.CreateDirectory(dir);
             File.WriteAllText(_defaultConfigPath, json);
-            Output.Print("Global/Config", LogLevel.INFO, "已创建新的默认配置文件。", includeTimestamp: true);
+            Print("Global/Config", LogLevel.INFO, "已创建新的默认配置文件。", includeTimestamp: true);
         }
         catch (Exception ex)
         {
-            Output.Print("Global/Config", LogLevel.ERROR, $"创建默认配置失败: {ex.Message}，回退到空配置。", includeTimestamp: true);
+            Print("Global/Config", LogLevel.ERROR, $"创建默认配置失败: {ex.Message}，回退到空配置。", includeTimestamp: true);
         }
         return defaultCfg;
     }

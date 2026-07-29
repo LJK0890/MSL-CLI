@@ -26,10 +26,10 @@ internal class ServerArgument
         this.name = name;
         // 1. 根据操作系统选择对应的启动脚本文件名
         string runFile = Path.Combine(filePath, RuntimeInformation.IsOSPlatform(OSPlatform.Windows) ? "run.bat" : "run.sh");
-        Output.Print($"{name}/Argument", LogLevel.INFO, $"尝试读取启动脚本: {runFile}", includeTimestamp: true);
+        Print($"{name}/Argument", LogLevel.INFO, $"尝试读取启动脚本: {runFile}", includeTimestamp: true);
         if (!File.Exists(runFile))
         {
-            Output.Print($"{name}/Argument", LogLevel.WARNING, $"启动脚本不存在，使用默认参数。", includeTimestamp: true);
+            Print($"{name}/Argument", LogLevel.WARNING, $"启动脚本不存在，使用默认参数。", includeTimestamp: true);
             return;
         }
 
@@ -37,7 +37,7 @@ internal class ServerArgument
         string defaultArgsWithREM = File.ReadAllText(runFile, Encoding.UTF8);
         if (string.IsNullOrWhiteSpace(defaultArgsWithREM))
         {
-            Output.Print($"{name}/Argument", LogLevel.WARNING, $"启动脚本内容为空，使用默认参数。", includeTimestamp: true);
+            Print($"{name}/Argument", LogLevel.WARNING, $"启动脚本内容为空，使用默认参数。", includeTimestamp: true);
             return;
         }
 
@@ -54,17 +54,17 @@ internal class ServerArgument
         }
         if (string.IsNullOrWhiteSpace(defaultArgsWithJAVA))
         {
-            Output.Print($"{name}/Argument", LogLevel.WARNING, $"未能找到 java 启动行，使用默认参数。", includeTimestamp: true);
+            Print($"{name}/Argument", LogLevel.WARNING, $"未能找到 java 启动行，使用默认参数。", includeTimestamp: true);
             return;
         }
-        Output.Print($"{name}/Argument", LogLevel.INFO, $"找到启动命令行: {defaultArgsWithJAVA}", includeTimestamp: true);
+        Print($"{name}/Argument", LogLevel.INFO, $"找到启动命令行: {defaultArgsWithJAVA}", includeTimestamp: true);
 
         // 4. 提取 java 可执行文件路径（第一个 token）
         string pattern = @"^(\s*)(""[^""]*""|\S+)\s*";
         Match match = Regex.Match(defaultArgsWithJAVA, pattern);
         if (!match.Success)
         {
-            Output.Print($"{name}/Argument", LogLevel.WARNING, $"无法解析 java 路径，使用默认参数。", includeTimestamp: true);
+            Print($"{name}/Argument", LogLevel.WARNING, $"无法解析 java 路径，使用默认参数。", includeTimestamp: true);
             return;
         }
         string defaultArgsWithJar = defaultArgsWithJAVA.Substring(match.Length);
@@ -72,19 +72,19 @@ internal class ServerArgument
         javaPath = javaPathWithQuotes.StartsWith("\"") && javaPathWithQuotes.EndsWith("\"")
             ? javaPathWithQuotes.Trim('"')
             : javaPathWithQuotes;
-        Output.Print($"{name}/Argument", LogLevel.INFO, $"Java 路径: {javaPath}", includeTimestamp: true);
+        Print($"{name}/Argument", LogLevel.INFO, $"Java 路径: {javaPath}", includeTimestamp: true);
 
         // 5. 按空格分词（保留引号内的空格）
         List<string> tokens = Tokenize(defaultArgsWithJar);
         if (tokens.Count == 0)
         {
-            Output.Print($"{name}/Argument", LogLevel.WARNING, $"参数分词结果为空，使用默认参数。", includeTimestamp: true);
+            Print($"{name}/Argument", LogLevel.WARNING, $"参数分词结果为空，使用默认参数。", includeTimestamp: true);
             return;
         }
 
         // 6. 展开 @ 文件（例如 @libraries.txt），但排除 @win_args.txt / @unix_args.txt
         tokens = ExpandAtFiles(filePath, tokens);
-        Output.Print($"{name}/Argument", LogLevel.INFO, $"展开 @ 文件后共有 {tokens.Count} 个 token。", includeTimestamp: true);
+        Print($"{name}/Argument", LogLevel.INFO, $"展开 @ 文件后共有 {tokens.Count} 个 token。", includeTimestamp: true);
 
         // 7. 定位 -jar 参数及其后紧跟的 jar 文件名
         int jarIndex = -1;
@@ -106,7 +106,7 @@ internal class ServerArgument
             {
                 if (i + 1 >= tokens.Count)
                 {
-                    Output.Print($"{name}/Argument", LogLevel.WARNING, $"-jar 后缺少文件名，使用默认参数。", includeTimestamp: true);
+                    Print($"{name}/Argument", LogLevel.WARNING, $"-jar 后缺少文件名，使用默认参数。", includeTimestamp: true);
                     return;
                 }
                 jarArgs = tokens[i] + " " + tokens[i + 1];
@@ -114,10 +114,10 @@ internal class ServerArgument
         }
         if (jarIndex == -1)
         {
-            Output.Print($"{name}/Argument", LogLevel.WARNING, $"未找到 -jar 参数，使用默认参数。", includeTimestamp: true);
+            Print($"{name}/Argument", LogLevel.WARNING, $"未找到 -jar 参数，使用默认参数。", includeTimestamp: true);
             return;
         }
-        Output.Print($"{name}/Argument", LogLevel.INFO, $"找到 -jar 参数: {jarArgs}", includeTimestamp: true);
+        Print($"{name}/Argument", LogLevel.INFO, $"找到 -jar 参数: {jarArgs}", includeTimestamp: true);
 
         // 8. 提取 -jar 之前的所有 token 作为 JVM 参数（排除 % 开头的变量和 nogui）
         var jvmTokens = new List<string>();
@@ -132,11 +132,11 @@ internal class ServerArgument
         if (jvmTokens.Count > 0)
         {
             userJvmArgs = string.Join(" ", jvmTokens);
-            Output.Print($"{name}/Argument", LogLevel.INFO, $"JVM 参数: {userJvmArgs}", includeTimestamp: true);
+            Print($"{name}/Argument", LogLevel.INFO, $"JVM 参数: {userJvmArgs}", includeTimestamp: true);
         }
         else
         {
-            Output.Print($"{name}/Argument", LogLevel.INFO, $"未提取到 JVM 参数，使用默认值。", includeTimestamp: true);
+            Print($"{name}/Argument", LogLevel.INFO, $"未提取到 JVM 参数，使用默认值。", includeTimestamp: true);
         }
     }
 
@@ -157,7 +157,7 @@ internal class ServerArgument
                     fileName.EndsWith("unix_args.txt", StringComparison.OrdinalIgnoreCase))
                 {
                     expanded.Add(token);
-                    Output.Print($"{name}/Argument", LogLevel.INFO, $"保留排除文件: {token}", includeTimestamp: true);
+                    Print($"{name}/Argument", LogLevel.INFO, $"保留排除文件: {token}", includeTimestamp: true);
                     continue;
                 }
                 string atFilePath = Path.Combine(filePath, fileName);
@@ -175,16 +175,16 @@ internal class ServerArgument
                         }
                         var subTokens = Tokenize(string.Join(" ",lines));
                         expanded.AddRange(subTokens);
-                        Output.Print($"{name}/Argument", LogLevel.INFO, $"展开 @{fileName}，得到 {subTokens.Count} 个子 token。", includeTimestamp: true);
+                        Print($"{name}/Argument", LogLevel.INFO, $"展开 @{fileName}，得到 {subTokens.Count} 个子 token。", includeTimestamp: true);
                     }
                     else
                     {
-                        Output.Print($"{name}/Argument", LogLevel.INFO, $"@{fileName} 文件内容为空，忽略。", includeTimestamp: true);
+                        Print($"{name}/Argument", LogLevel.INFO, $"@{fileName} 文件内容为空，忽略。", includeTimestamp: true);
                     }
                 }
                 else
                 {
-                    Output.Print($"{name}/Argument", LogLevel.INFO, $"@{fileName} 文件不存在，保留原 token。", includeTimestamp: true);
+                    Print($"{name}/Argument", LogLevel.INFO, $"@{fileName} 文件不存在，保留原 token。", includeTimestamp: true);
                     expanded.Add(token);
                 }
             }
@@ -241,10 +241,10 @@ internal class ServerArgument
     /// </summary>
     public void PrintArguments()
     {
-        Output.Print($"{name}/Argument", LogLevel.INFO, $"Java Path: {javaPath}", includeTimestamp: true);
-        Output.Print($"{name}/Argument", LogLevel.INFO, $"User JVM Args: {userJvmArgs}", includeTimestamp: true);
-        Output.Print($"{name}/Argument", LogLevel.INFO, $"Jar Args: {jarArgs}", includeTimestamp: true);
-        Output.Print($"{name}/Argument", LogLevel.INFO, $"Append Args: {appendArgs}", includeTimestamp: true);
-        Output.Print($"{name}/Argument", LogLevel.INFO, $"Full Start Arguments: {GetStartArguments()}", includeTimestamp: true);
+        Print($"{name}/Argument", LogLevel.INFO, $"Java Path: {javaPath}", includeTimestamp: true);
+        Print($"{name}/Argument", LogLevel.INFO, $"User JVM Args: {userJvmArgs}", includeTimestamp: true);
+        Print($"{name}/Argument", LogLevel.INFO, $"Jar Args: {jarArgs}", includeTimestamp: true);
+        Print($"{name}/Argument", LogLevel.INFO, $"Append Args: {appendArgs}", includeTimestamp: true);
+        Print($"{name}/Argument", LogLevel.INFO, $"Full Start Arguments: {GetStartArguments()}", includeTimestamp: true);
     }
 }

@@ -28,11 +28,11 @@ internal class ServerConfig
         _filePath = filePath;
         if (!File.Exists(filePath))
         {
-            Output.Print($"{name}/Config", LogLevel.ERROR, $"server.properties 不存在: {filePath}", includeTimestamp: true);
+            Print($"{name}/Config", LogLevel.ERROR, $"server.properties 不存在: {filePath}", includeTimestamp: true);
         }
 
         Load();
-        Output.Print($"{name}/Config", LogLevel.INFO, $"成功加载 server.properties，共 {_properties.Count} 个属性。", includeTimestamp: true);
+        Print($"{name}/Config", LogLevel.INFO, $"成功加载 server.properties，共 {_properties.Count} 个属性。", includeTimestamp: true);
     }
 
     /// <summary>
@@ -88,7 +88,7 @@ internal class ServerConfig
     {
         _properties[key] = value;
         Save();
-        Output.Print($"{name}/Config", LogLevel.INFO, $"设置键 '{key}' = '{value}' 并保存。", includeTimestamp: true);
+        Print($"{name}/Config", LogLevel.INFO, $"设置键 '{key}' = '{value}' 并保存。", includeTimestamp: true);
     }
 
     /// <summary>
@@ -136,7 +136,7 @@ internal class ServerConfig
             {
                 File.Move(tempFilePath, _filePath);
             }
-            Output.Print($"{name}/Config", LogLevel.INFO, $"成功保存 server.properties 到 {_filePath}", includeTimestamp: true);
+            Print($"{name}/Config", LogLevel.INFO, $"成功保存 server.properties 到 {_filePath}", includeTimestamp: true);
         }
         finally
         {
