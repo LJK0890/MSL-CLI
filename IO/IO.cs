@@ -40,6 +40,7 @@ public static class IO
     // 日志级别枚举
     public enum LogLevel
     {
+        NULL,
         DEBUG,
         INFO,
         SUCCESS,

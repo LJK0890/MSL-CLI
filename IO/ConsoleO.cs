@@ -93,7 +93,7 @@ public class ConsoleO : IDisposable
         sb.Append(style);
 
         // 日志前缀（上下文/级别）
-        sb.Append($"[{entry.Context}/{entry.Level}] ");
+        sb.Append($"[{entry.Context}/{(entry.Level != IO.LogLevel.NULL ? entry.Level : String.Empty)}] ");
 
         // 时间戳（可选）
         if (entry.Timestamp.HasValue)

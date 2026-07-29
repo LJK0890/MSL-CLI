@@ -106,7 +106,16 @@ internal class GlobalManager : IDisposable
             Scan(out List<string> lines);
             foreach(var line in lines)
             {
-                await serverManagers["yz"].SendCommandAsync(line);
+                if (line == "aaa")
+                {
+                    var a = await serverManagers["yz"].GetServerQueryInfoAsync();
+                    if (a == null) continue;
+                    foreach(KeyValuePair<string, string> i in a)
+                    {
+                        Print("", LogLevel.INFO, $"{i.Key}:{i.Value}");
+                    }
+                }
+                else await serverManagers["yz"].SendCommandAsync(line);
                 
             }
         }

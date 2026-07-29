@@ -146,4 +146,30 @@ internal class ServerConfig
             }
         }
     }
+
+    /// <summary>
+    /// 是否启用 Query 功能 (对应 server.properties 中的 enable-query)
+    /// </summary>
+    public bool EnableQuery => GetValue("enable-query", "false").Equals("true", StringComparison.OrdinalIgnoreCase);
+
+    /// <summary>
+    /// Query 端口号 (对应 server.properties 中的 query.port)
+    /// 默认返回 25565，如果未配置则使用服务器端口（通常 query.port 默认跟随 server-port）
+    /// </summary>
+    public int QueryPort
+    {
+        get
+        {
+            // 尝试读取 query.port
+            var portStr = GetValue("query.port");
+            if (!string.IsNullOrEmpty(portStr) && int.TryParse(portStr, out int port))
+            {
+                return port;
+            }
+
+            // 如果未配置 query.port，通常默认与 server-port 一致
+            var serverPortStr = GetValue("server-port", "25565");
+            return int.TryParse(serverPortStr, out int sPort) ? sPort : 25565;
+        }
+    }
 }

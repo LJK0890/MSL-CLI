@@ -110,8 +110,8 @@ public class LogO : IDisposable
                 // 格式化日志：[时间] [级别] [上下文] 内容
                 // 注意：写入文件通常不需要 ANSI 颜色代码，除非是专门为了查看彩色日志文件
                 // 这里为了纯净的文本日志，去除了颜色代码，仅保留文本格式
-                string timestamp = entry.Timestamp.HasValue ? entry.Timestamp.Value.ToString("HH:mm:ss") : "------";
-                sb.AppendLine($"[{timestamp}] [{entry.Level}] [{entry.Context}] {entry.Message}");
+                string timestamp = entry.Timestamp.HasValue ? $"[{entry.Timestamp.Value.ToString("HH:mm:ss")}] " : String.Empty;
+                sb.AppendLine($"[{entry.Context}/{(entry.Level != IO.LogLevel.NULL ? entry.Level : string.Empty)}] {timestamp}{entry.Message}");
             }
 
             // 使用 AppendAllText 是线程安全的（相对于文件流），但在高并发下 AppendAsync 性能更好
