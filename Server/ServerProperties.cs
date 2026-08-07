@@ -1,12 +1,12 @@
 ﻿using static MSL_CLI.IO.IO;
 using System.Text.RegularExpressions;
 
-namespace MSL_CLI.Models;
+namespace MSL_CLI.Server;
 
 /// <summary>
 /// 处理 server.properties 文件的读取、写入和键值操作。
 /// </summary>
-internal class ServerConfig
+internal class ServerProperties
 {
     private readonly Dictionary<string, string> _properties = new();
     private readonly string _filePath;
@@ -21,8 +21,7 @@ internal class ServerConfig
     /// 构造函数，加载指定路径的 server.properties 文件。
     /// </summary>
     /// <param name="filePath">server.properties 文件的完整路径</param>
-    /// <exception cref="FileNotFoundException">文件不存在时抛出</exception>
-    public ServerConfig(string name, string filePath)
+    public ServerProperties(string name, string filePath)
     {
         this.name = name;
         _filePath = filePath;
@@ -172,4 +171,6 @@ internal class ServerConfig
             return int.TryParse(serverPortStr, out int sPort) ? sPort : 25565;
         }
     }
+
+    public IReadOnlyDictionary<string, string> Entries => _properties;
 }

@@ -3,7 +3,7 @@ using System.Text.RegularExpressions;
 using System.Runtime.InteropServices;
 using static MSL_CLI.IO.IO;
 
-namespace MSL_CLI.Models;
+namespace MSL_CLI.Server;
 
 /// <summary>
 /// 负责解析 Minecraft 服务器启动脚本（run.bat/run.sh）中的参数，

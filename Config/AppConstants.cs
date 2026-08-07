@@ -2,7 +2,7 @@
 using System.Text.Json;
 using System.Text.Json.Serialization;
 
-namespace MSL_CLI.Models;
+namespace MSL_CLI.Config;
 
 /// <summary>
 /// 应用程序常量定义，包括文件名、JSON 序列化选项等。

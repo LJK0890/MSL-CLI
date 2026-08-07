@@ -1,51 +1,51 @@
-﻿using System.Diagnostics;
+﻿using McQuery.Net;
+using System.Collections.Concurrent;
+using System.Diagnostics;
 using System.Net;
 using System.Net.Sockets;
 using System.Text;
+using System.Text.Json;
 using static MSL_CLI.IO.IO;
-using MSL_CLI.Models;
-using McQuery.Net; // 新增引用
 
-namespace MSL_CLI.Services;
+namespace MSL_CLI.Server;
 
 internal class ServerManager
 {
-    private ServerConfig serverConfig;
+    private ServerProperties serverConfig;
     private ServerArgument serverArgument;
     private string serverPath;
     private string serverName;
     private Process? serverProcess;
     private ServerStatus status = ServerStatus.Stopped;
-    private readonly object lockObject = new object();
 
     public ServerStatus Status
     {
-        get { lock (lockObject) return status; }
-        private set { lock (lockObject) status = value; }
+        get { return status; }
+        private set { status = value; }
     }
 
     public ServerManager(string name, string filePath)
     {
         serverPath = filePath;
         serverName = name;
-        Print($"{name}", LogLevel.INFO, $"初始化服务器: {filePath}", includeTimestamp: true);
+        Print($"{name}", LogLevel.INFO, $"初始化服务器: {filePath}");
 
-        serverConfig = new ServerConfig(name, Path.Combine(filePath, "server.properties"));
+        serverConfig = new ServerProperties(name, Path.Combine(filePath, "server.properties"));
         serverArgument = new ServerArgument(name, filePath);
 
-        Print($"{name}", LogLevel.INFO, $"服务器初始化完成。", includeTimestamp: true);
+        Print($"{name}", LogLevel.INFO, $"服务器初始化完成。");
     }
 
     public async Task StartAsync()
     {
         if (Status == ServerStatus.Running || Status == ServerStatus.Starting)
         {
-            Print($"{serverName}", LogLevel.WARNING, "服务器已在运行或正在启动中。", includeTimestamp: true);
+            Print($"{serverName}", LogLevel.WARNING, "服务器已在运行或正在启动中。");
             return;
         }
 
         Status = ServerStatus.Starting;
-        Print($"{serverName}", LogLevel.INFO, "正在启动服务器...", includeTimestamp: true);
+        Print($"{serverName}", LogLevel.INFO, "正在启动服务器...");
 
         try
         {
@@ -77,18 +77,18 @@ internal class ServerManager
                 serverProcess.BeginOutputReadLine();
                 serverProcess.BeginErrorReadLine();
                 Status = ServerStatus.Running;
-                Print($"{serverName}", LogLevel.SUCCESS, "服务器已启动。", includeTimestamp: true);
+                Print($"{serverName}", LogLevel.SUCCESS, "服务器已启动。");
             }
             else
             {
                 Status = ServerStatus.Stopped;
-                Print($"{serverName}", LogLevel.ERROR, "进程启动失败 (Start 返回 false)。", includeTimestamp: true);
+                Print($"{serverName}", LogLevel.ERROR, "进程启动失败。");
             }
         }
         catch (Exception ex)
         {
             Status = ServerStatus.Stopped;
-            Print($"{serverName}", LogLevel.ERROR, $"启动异常: {ex.Message}", includeTimestamp: true);
+            Print($"{serverName}", LogLevel.ERROR, $"启动异常: {ex.Message}");
         }
     }
 
@@ -98,7 +98,7 @@ internal class ServerManager
             return;
 
         Status = ServerStatus.Stopping;
-        Print($"{serverName}", LogLevel.INFO, "正在停止服务器...", includeTimestamp: true);
+        Print($"{serverName}", LogLevel.INFO, "正在停止服务器...");
 
         if (serverProcess == null || serverProcess.HasExited)
         {
@@ -111,11 +111,11 @@ internal class ServerManager
             try
             {
                 serverProcess.Kill(true);
-                Print($"{serverName}", LogLevel.WARNING, "进程已强制终止。", includeTimestamp: true);
+                Print($"{serverName}", LogLevel.WARNING, "进程已强制终止。");
             }
             catch (Exception ex)
             {
-                Print($"{serverName}", LogLevel.ERROR, $"强制终止失败: {ex.Message}", includeTimestamp: true);
+                Print($"{serverName}", LogLevel.ERROR, $"强制终止失败: {ex.Message}");
             }
         }
         else
@@ -123,15 +123,15 @@ internal class ServerManager
             try
             {
                 await serverProcess.StandardInput.WriteLineAsync("stop");
-                if (!await Task.Run(() => serverProcess.WaitForExit(30000)))
+                if (!await Task.Run(() => serverProcess.WaitForExit(60000)))
                 {
-                    Print($"{serverName}", LogLevel.WARNING, "优雅关闭超时，正在强制终止...", includeTimestamp: true);
+                    Print($"{serverName}", LogLevel.WARNING, "关闭超时，正在强制终止...");
                     serverProcess.Kill(true);
                 }
             }
             catch (Exception ex)
             {
-                Print($"{serverName}", LogLevel.ERROR, $"停止异常: {ex.Message}", includeTimestamp: true);
+                Print($"{serverName}", LogLevel.ERROR, $"停止异常: {ex.Message}");
                 serverProcess.Kill(true);
             }
         }
@@ -147,34 +147,15 @@ internal class ServerManager
             }
             catch (Exception ex)
             {
-                Print($"{serverName}", LogLevel.ERROR, $"发送命令失败: {ex.Message}", includeTimestamp: true);
+                Print($"{serverName}", LogLevel.ERROR, $"发送命令失败: {ex.Message}");
             }
-        }
-    }
-
-    private void OnOutputReceived(string? data)
-    {
-        if (string.IsNullOrEmpty(data))
-            return;
-
-        // 匹配形如 [xxx/LEVEL] 的开头
-        var match = System.Text.RegularExpressions.Regex.Match(data, @"^\[[^\/]+\/([A-Z]+)\].*");
-        if (match.Success)
-        {
-            string matchLevel = match.Groups[1].Value;
-            Print($"{serverName}/OUT", ParseLevel(matchLevel), data.Replace($"/{matchLevel}",""), includeTimestamp: false);
-        }
-        else
-        {
-            // 如果格式不匹配，降级为原逻辑
-            Print($"{serverName}/OUT", LogLevel.INFO, data, includeTimestamp: false);
         }
     }
 
     private void OnProcessExited()
     {
         Status = ServerStatus.Stopped;
-        Print($"{serverName}", LogLevel.INFO, "服务器进程已退出。", includeTimestamp: true);
+        Print($"{serverName}", LogLevel.INFO, "服务器进程已退出。");
     }
 
     /// <summary>
@@ -184,18 +165,18 @@ internal class ServerManager
     {
         if (!serverConfig.EnableQuery)
         {
-            Print($"{serverName}/Query", LogLevel.WARNING, "配置中未启用 Query (enable-query=false)。", includeTimestamp: true);
+            Print($"{serverName}/Query", LogLevel.WARNING, "配置中未启用 Query (enable-query=false)。");
             return null;
         }
 
         if (Status != ServerStatus.Running || serverProcess == null || serverProcess.HasExited)
         {
-            Print($"{serverName}/Query", LogLevel.WARNING, "服务器未运行，无法获取 Query 信息。", includeTimestamp: true);
+            Print($"{serverName}/Query", LogLevel.WARNING, "服务器未运行，无法获取 Query 信息。");
             return null;
         }
 
         int targetPort = serverConfig.QueryPort;
-        Print($"{serverName}/Query", LogLevel.INFO, $"使用 query.port = {targetPort}", includeTimestamp: true);
+        Print($"{serverName}/Query", LogLevel.INFO, $"使用 query.port = {targetPort}");
 
         var endpoint = new IPEndPoint(IPAddress.Loopback, targetPort);
 
@@ -222,15 +203,72 @@ internal class ServerManager
                 ["players"] = string.Join(", ", fullStatus.PlayerList)
             };
 
-            Print($"{serverName}/Query", LogLevel.SUCCESS, "Query 信息获取成功。", includeTimestamp: true);
+            Print($"{serverName}/Query", LogLevel.SUCCESS, "Query 信息获取成功。");
             return result;
         }
         catch (Exception ex)
         {
-            Print($"{serverName}/Query", LogLevel.ERROR, $"Query 查询失败: {ex.Message}", includeTimestamp: true);
+            Print($"{serverName}/Query", LogLevel.ERROR, $"Query 查询失败: {ex.Message}");
             return null;
         }
     }
+
+    public ServerProperties ServerProperties => serverConfig;
+
+    public string GetServerName() => serverName;
+
+    /// <summary>
+    /// 获取服务器 OP 列表（玩家名列表）
+    /// </summary>
+    public List<string> GetOps()
+    {
+        string opsFilePath = Path.Combine(serverPath, "ops.json");
+        if (!File.Exists(opsFilePath))
+        {
+            Print($"{serverName}/Ops", LogLevel.WARNING, "ops.json 文件不存在", true);
+            return new List<string>();
+        }
+
+        try
+        {
+            string json = File.ReadAllText(opsFilePath, Encoding.UTF8);
+            // ops.json 是一个数组，每个元素包含 name, uuid, level 等
+            using var doc = JsonDocument.Parse(json);
+            var root = doc.RootElement;
+            if (root.ValueKind != JsonValueKind.Array)
+            {
+                Print($"{serverName}/Ops", LogLevel.WARNING, "ops.json 格式无效（不是数组）", true);
+                return new List<string>();
+            }
+
+            var ops = new List<string>();
+            foreach (var element in root.EnumerateArray())
+            {
+                if (element.TryGetProperty("name", out var nameElement))
+                {
+                    string? name = nameElement.GetString();
+                    if (!string.IsNullOrEmpty(name))
+                        ops.Add(name);
+                }
+            }
+            return ops;
+        }
+        catch (Exception ex)
+        {
+            Print($"{serverName}/Ops", LogLevel.ERROR, $"读取 ops.json 失败: {ex.Message}", true);
+            return new List<string>();
+        }
+    }
+
+    /// <summary>
+    /// 检查指定玩家是否为 OP
+    /// </summary>
+    public bool IsOp(string playerName)
+    {
+        var ops = GetOps();
+        return ops.Contains(playerName, StringComparer.OrdinalIgnoreCase);
+    }
+
     private static LogLevel ParseLevel(string levelStr)
     {
         return levelStr.ToUpperInvariant() switch
@@ -245,6 +283,29 @@ internal class ServerManager
             _ => LogLevel.INFO // 默认
         };
     }
+
+    private void OnOutputReceived(string? data)
+    {
+        if (string.IsNullOrEmpty(data))
+            return;
+
+        // 匹配形如 [xxx/LEVEL] 的开头
+        var match = System.Text.RegularExpressions.Regex.Match(data, @"^\[[^\/]+\/([A-Z]+)\].*");
+        if (match.Success)
+        {
+            string matchLevel = match.Groups[1].Value;
+            Print($"{serverName}/OUT", ParseLevel(matchLevel), data.Replace($"/{matchLevel}", ""), includeTimestamp: false);
+        }
+        else
+        {
+            // 如果格式不匹配，降级为原逻辑
+            Print($"{serverName}/OUT", LogLevel.INFO, data, includeTimestamp: false);
+        }
+    }
+
+    public Process? GetProcess() => serverProcess;
+
+    public string GetServerPath() => serverPath;
 }
 
 internal enum ServerStatus
