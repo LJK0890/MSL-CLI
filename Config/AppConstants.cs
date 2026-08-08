@@ -7,7 +7,7 @@ namespace MSL_CLI.Config;
 /// <summary>
 /// 应用程序常量定义，包括文件名、JSON 序列化选项等。
 /// </summary>
-internal static class AppConstants
+public static class AppConstants
 {
     /// <summary>应用名称，用于配置文件夹</summary>
     public static readonly string AppName = "MSL_CLI";

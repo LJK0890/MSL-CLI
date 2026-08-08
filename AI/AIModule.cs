@@ -6,7 +6,7 @@ namespace MSL_CLI.AI;
 /// <summary>
 /// AI 模块，管理多个 AI 客户端，提供对话和 Agent 功能。
 /// </summary>
-internal class AIModule
+public class AIModule
 {
     private readonly GlobalManager _globalManager;
     private readonly Dictionary<string, AIClient> _clients = new();

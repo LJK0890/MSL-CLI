@@ -7,7 +7,7 @@ namespace MSL_CLI.Commands;
 /// <summary>
 /// 命令解析器，自动注册所有带 [Command] 特性的类。
 /// </summary>
-internal class CommandParser
+public class CommandParser
 {
     private readonly Dictionary<string, ICommand> _handlers
         = new Dictionary<string, ICommand>(StringComparer.OrdinalIgnoreCase);

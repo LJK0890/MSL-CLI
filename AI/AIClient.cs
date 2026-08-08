@@ -9,7 +9,7 @@ using System.Text.Json;
 
 namespace MSL_CLI.AI;
 
-internal class AIClient
+public class AIClient
 {
     private readonly ChatClient _chatClient;
     private readonly List<ChatTool> _tools;

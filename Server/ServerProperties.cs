@@ -6,7 +6,7 @@ namespace MSL_CLI.Server;
 /// <summary>
 /// 处理 server.properties 文件的读取、写入和键值操作。
 /// </summary>
-internal class ServerProperties
+public class ServerProperties
 {
     private readonly Dictionary<string, string> _properties = new();
     private readonly string _filePath;

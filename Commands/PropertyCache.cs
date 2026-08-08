@@ -8,7 +8,7 @@ namespace MSL_CLI.Commands;
 /// <summary>
 /// 属性信息 LRU 缓存，限制容量由 AppConfig.MaxPropertyCacheLength 控制。
 /// </summary>
-internal static class PropertyCache
+public static class PropertyCache
 {
     private static readonly Dictionary<string, (PropertyInfo Prop, LinkedListNode<string> Node)> _cache
         = new Dictionary<string, (PropertyInfo, LinkedListNode<string>)>();

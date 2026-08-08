@@ -3,7 +3,7 @@
 /// <summary>
 /// 应用程序整体配置，包含 AI 配置和多个服务器路径。
 /// </summary>
-internal class AppConfig
+public class AppConfig
 {
     /// <summary>是否启用 AI 功能（全局开关）</summary>
     public bool EnableAI { get; set; } = true;

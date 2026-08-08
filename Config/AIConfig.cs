@@ -9,7 +9,7 @@ namespace MSL_CLI.Config;
 /// AI 配置模型，存储单个 AI 服务的连接信息。
 /// </summary>
 [JsonConverter(typeof(AIConfigConverter))]
-internal class AIConfig
+public class AIConfig
 {
     /// <summary>API 请求地址</summary>
     public string Url { get; set; } = string.Empty;
@@ -57,7 +57,7 @@ internal class AIConfig
 /// <summary>
 /// AIConfig 的自定义 JSON 转换器，支持从环境变量读取 ApiKey。
 /// </summary>
-internal class AIConfigConverter : JsonConverter<AIConfig>
+public class AIConfigConverter : JsonConverter<AIConfig>
 {
     public override AIConfig Read(ref Utf8JsonReader reader, Type typeToConvert, JsonSerializerOptions options)
     {

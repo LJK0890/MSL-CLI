@@ -10,7 +10,7 @@ namespace MSL_CLI.Services;
 /// <summary>
 /// 全局管理器，负责加载/保存应用程序配置，并管理所有 ServerManager 实例。
 /// </summary>
-internal class GlobalManager : IDisposable
+public class GlobalManager : IDisposable
 {
     private AppConfig appConfig;
     private bool disposed = false;

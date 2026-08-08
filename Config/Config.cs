@@ -6,7 +6,7 @@ namespace MSL_CLI.Config;
 /// <summary>
 /// 配置服务，专门负责配置的加载与保存，与业务逻辑解耦。
 /// </summary>
-internal class Config
+public class Config
 {
     private readonly string _userConfigPath;
     private readonly string _defaultConfigPath;

@@ -12,7 +12,7 @@ namespace MSL_CLI.Commands;
 
 // ========== $set ==========
 [Command("$set", Description = "设置配置值，用法: $set <路径> <值>")]
-internal class SetCommand : ICommand
+public class SetCommand : ICommand
 {
     public int Execute(CommandArgs args,bool capture = false)
     {
@@ -48,7 +48,7 @@ internal class SetCommand : ICommand
 }
 
 // ========== $get ==========
-internal static class GetHelper
+public static class GetHelper
 {
     public static int Execute(CommandArgs args, bool capture = false)
     {
@@ -187,21 +187,21 @@ internal static class GetHelper
 }
 
 [Command("$get", Description = "获取配置值，用法: $get <路径> 或不带参数获取全部配置")]
-internal class GetCommand : ICommand
+public class GetCommand : ICommand
 {
     public int Execute(CommandArgs args, bool capture = false) => GetHelper.Execute(args, capture);
 }
 
 // ========== $getall ==========
 [Command("$getall", Description = "获取全部配置（等效于 $get 无参数）")]
-internal class GetAllCommand : ICommand
+public class GetAllCommand : ICommand
 {
     public int Execute(CommandArgs args, bool capture = false) => GetHelper.Execute(args, capture);
 }
 
 // ========== $reload ==========
 [Command("$reload", Description = "重新加载配置文件")]
-internal class ReloadCommand : ICommand
+public class ReloadCommand : ICommand
 {
     public int Execute(CommandArgs args,bool capture = false)
     {
@@ -221,7 +221,7 @@ internal class ReloadCommand : ICommand
 
 // ========== $list ==========
 [Command("$list", Description = "列出所有服务器")]
-internal class ListCommand : ICommand
+public class ListCommand : ICommand
 {
     public int Execute(CommandArgs args,bool capture = false)
     {
@@ -245,7 +245,7 @@ internal class ListCommand : ICommand
 
 // ========== $run ==========
 [Command("$run", Description = "启动指定服务器，用法: $run <服务器名>")]
-internal class RunCommand : ICommand
+public class RunCommand : ICommand
 {
     public async Task<int> ExecuteAsync(CommandArgs args,bool capture = false)
     {
@@ -288,7 +288,7 @@ internal class RunCommand : ICommand
 
 // ========== $stop ==========
 [Command("$stop", Description = "停止指定服务器，用法: $stop <服务器名> [-f]")]
-internal class StopCommand : ICommand
+public class StopCommand : ICommand
 {
     public async Task<int> ExecuteAsync(CommandArgs args,bool capture = false)
     {
@@ -326,7 +326,7 @@ internal class StopCommand : ICommand
 
 // ========== $help ==========
 [Command("$help", Description = "显示所有可用命令的帮助信息")]
-internal class HelpCommand : ICommand
+public class HelpCommand : ICommand
 {
     public int Execute(CommandArgs args,bool capture = false)
     {
@@ -349,7 +349,7 @@ internal class HelpCommand : ICommand
 
 // ========== $hl / $highlight ==========
 // 基础逻辑提取为静态方法，避免重复
-internal static class HighlightHelper
+public static class HighlightHelper
 {
     public static int ExecuteHighlight(CommandArgs args,bool capture = false)
     {
@@ -378,19 +378,19 @@ internal static class HighlightHelper
 }
 
 [Command("$hl", Description = "切换高亮服务器，用法: $hl <服务器名> 或 $hl 显示当前高亮")]
-internal class HighlightCommand : ICommand
+public class HighlightCommand : ICommand
 {
     public int Execute(CommandArgs args,bool capture = false) => HighlightHelper.ExecuteHighlight(args, capture);
 }
 
 [Command("$highlight", Description = "切换高亮服务器，用法: $highlight <服务器名> 或 $highlight 显示当前高亮")]
-internal class HighlightAliasCommand : ICommand
+public class HighlightAliasCommand : ICommand
 {
     public int Execute(CommandArgs args,bool capture = false) => HighlightHelper.ExecuteHighlight(args, capture);
 }
 
 // ========== $rn / $runnow ==========
-internal static class RunNowHelper
+public static class RunNowHelper
 {
     public static async Task<int> ExecuteRunNowAsync(CommandArgs args, bool capture = false)
     {
@@ -412,19 +412,19 @@ internal static class RunNowHelper
 }
 
 [Command("$rn", Description = "运行高亮服务器 (run now)")]
-internal class RunNowCommand : ICommand
+public class RunNowCommand : ICommand
 {
     public int Execute(CommandArgs args,bool capture = false) => RunNowHelper.ExecuteRunNowAsync(args, capture).GetAwaiter().GetResult();
 }
 
 [Command("$runnow", Description = "运行高亮服务器")]
-internal class RunNowAliasCommand : ICommand
+public class RunNowAliasCommand : ICommand
 {
     public int Execute(CommandArgs args,bool capture = false) => RunNowHelper.ExecuteRunNowAsync(args, capture).GetAwaiter().GetResult();
 }
 
 // ========== $sn / $stopnow ==========
-internal static class StopNowHelper
+public static class StopNowHelper
 {
     public static async Task<int> ExecuteStopNowAsync(CommandArgs args, bool force = false, bool capture = false)
     {
@@ -446,20 +446,20 @@ internal static class StopNowHelper
 }
 
 [Command("$sn", Description = "停止高亮服务器 (stop now)")]
-internal class StopNowCommand : ICommand
+public class StopNowCommand : ICommand
 {
     public int Execute(CommandArgs args,bool capture = false) => StopNowHelper.ExecuteStopNowAsync(args, false, capture).GetAwaiter().GetResult();
 }
 
 [Command("$stopnow", Description = "停止高亮服务器")]
-internal class StopNowAliasCommand : ICommand
+public class StopNowAliasCommand : ICommand
 {
     public int Execute(CommandArgs args,bool capture = false) => StopNowHelper.ExecuteStopNowAsync(args, false, capture).GetAwaiter().GetResult();
 }
 
 // ========== $exit ==========
 [Command("$exit", Description = "退出程序（会先停止所有服务器）")]
-internal class ExitCommand : ICommand
+public class ExitCommand : ICommand
 {
     public int Execute(CommandArgs args,bool capture = false)
     {
@@ -475,7 +475,7 @@ internal class ExitCommand : ICommand
 }
 
 // ========== $prtcfg / $printconfig ==========
-internal static class PrintConfigHelper
+public static class PrintConfigHelper
 {
     public static int Execute(CommandArgs args, bool capture = false)
     {
@@ -485,19 +485,19 @@ internal static class PrintConfigHelper
 }
 
 [Command("$prtcfg", Description = "打印当前配置到控制台（调试用）")]
-internal class PrtcfgCommand : ICommand
+public class PrtcfgCommand : ICommand
 {
     public int Execute(CommandArgs args,bool capture = false) => PrintConfigHelper.Execute(args, capture);
 }
 
 [Command("$printconfig", Description = "打印当前配置到控制台（调试用）")]
-internal class PrintconfigCommand : ICommand
+public class PrintconfigCommand : ICommand
 {
     public int Execute(CommandArgs args,bool capture = false) => PrintConfigHelper.Execute(args, capture);
 }
 
 // ========== $configget / $cg ==========
-internal static class ConfigGetHelper
+public static class ConfigGetHelper
 {
     public static int Execute(CommandArgs args, bool useHighlight = false, bool capture = false)
     {
@@ -640,32 +640,32 @@ internal static class ConfigGetHelper
 }
 
 [Command("$configget", Description = "获取服务器 server.properties 配置，用法: $configget <服务器名> <键> 或 $configget <键> (使用高亮服务器)")]
-internal class ConfigGetCommand : ICommand
+public class ConfigGetCommand : ICommand
 {
     public int Execute(CommandArgs args,bool capture = false) => ConfigGetHelper.Execute(args, false, capture);
 }
 
 [Command("$cg", Description = "获取服务器 server.properties 配置 ($configget 的简写)")]
-internal class ConfigGetShortCommand : ICommand
+public class ConfigGetShortCommand : ICommand
 {
     public int Execute(CommandArgs args,bool capture = false) => ConfigGetHelper.Execute(args, false, capture);
 }
 
 // ========== $configgetnow / $cgn ==========
 [Command("$configgetnow", Description = "获取当前高亮服务器的 server.properties 配置，用法: $configgetnow <键>")]
-internal class ConfigGetNowCommand : ICommand
+public class ConfigGetNowCommand : ICommand
 {
     public int Execute(CommandArgs args,bool capture = false) => ConfigGetHelper.Execute(args, true, capture);
 }
 
 [Command("$cgn", Description = "获取当前高亮服务器的 server.properties 配置 ($configgetnow 的简写)")]
-internal class ConfigGetNowShortCommand : ICommand
+public class ConfigGetNowShortCommand : ICommand
 {
     public int Execute(CommandArgs args,bool capture = false) => ConfigGetHelper.Execute(args, true, capture);
 }
 
 // ========== $configset / $cs ==========
-internal static class ConfigSetHelper
+public static class ConfigSetHelper
 {
     public static int Execute(CommandArgs args, bool useHighlight = false, bool capture = false)
     {
@@ -753,32 +753,32 @@ internal static class ConfigSetHelper
 }
 
 [Command("$configset", Description = "设置服务器 server.properties 配置，用法: $configset <服务器名> <键> <值> 或 $configset <键> <值> (使用高亮服务器)")]
-internal class ConfigSetCommand : ICommand
+public class ConfigSetCommand : ICommand
 {
     public int Execute(CommandArgs args,bool capture = false) => ConfigSetHelper.Execute(args, false, capture);
 }
 
 [Command("$cs", Description = "设置服务器 server.properties 配置 ($configset 的简写)")]
-internal class ConfigSetShortCommand : ICommand
+public class ConfigSetShortCommand : ICommand
 {
     public int Execute(CommandArgs args,bool capture = false) => ConfigSetHelper.Execute(args, false, capture);
 }
 
 // ========== $configsetnow / $csn ==========
 [Command("$configsetnow", Description = "设置当前高亮服务器的 server.properties 配置，用法: $configsetnow <键> <值>")]
-internal class ConfigSetNowCommand : ICommand
+public class ConfigSetNowCommand : ICommand
 {
     public int Execute(CommandArgs args,bool capture = false) => ConfigSetHelper.Execute(args, true, capture);
 }
 
 [Command("$csn", Description = "设置当前高亮服务器的 server.properties 配置 ($configsetnow 的简写)")]
-internal class ConfigSetNowShortCommand : ICommand
+public class ConfigSetNowShortCommand : ICommand
 {
     public int Execute(CommandArgs args,bool capture = false) => ConfigSetHelper.Execute(args, true, capture);
 }
 
 // ========== $checkop 帮助类 ==========
-internal static class CheckOpHelper
+public static class CheckOpHelper
 {
     public static int Execute(CommandArgs args, string? serverName, string? playerName, bool capture = false)
     {
@@ -833,7 +833,7 @@ internal static class CheckOpHelper
 
 // ========== $checkop ==========
 [Command("$checkop", Description = "检查服务器 OP 列表或指定玩家是否为 OP，用法: $checkop <服务器名> [玩家名] (不指定玩家则输出全部 OP)")]
-internal class CheckOpCommand : ICommand
+public class CheckOpCommand : ICommand
 {
     public int Execute(CommandArgs args,bool capture = false)
     {
@@ -853,7 +853,7 @@ internal class CheckOpCommand : ICommand
 
 // ========== $checkopn / $checkopnow ==========
 [Command("$checkopn", Description = "检查高亮服务器的 OP 列表或指定玩家是否为 OP，用法: $checkopn [玩家名] (不指定玩家则输出全部 OP)")]
-internal class CheckOpNowCommand : ICommand
+public class CheckOpNowCommand : ICommand
 {
     public int Execute(CommandArgs args,bool capture = false)
     {
@@ -875,7 +875,7 @@ internal class CheckOpNowCommand : ICommand
 }
 
 [Command("$checkopnow", Description = "检查高亮服务器的 OP 列表或指定玩家是否为 OP ($checkopn 的完整写法)")]
-internal class CheckOpNowAliasCommand : ICommand
+public class CheckOpNowAliasCommand : ICommand
 {
     public int Execute(CommandArgs args,bool capture = false)
     {
@@ -895,7 +895,7 @@ internal class CheckOpNowAliasCommand : ICommand
 }
 
 // ========== $send / $sendn ==========
-internal static class SendCommandHelper
+public static class SendCommandHelper
 {
     public static int Execute(CommandArgs args, bool useHighlight = false, bool capture = false)
     {
@@ -966,20 +966,20 @@ internal static class SendCommandHelper
 }
 
 [Command("$send", Description = "向指定服务器发送 Minecraft 命令，用法: $send <服务器名> <命令>")]
-internal class SendCommand : ICommand
+public class SendCommand : ICommand
 {
     public int Execute(CommandArgs args,bool capture = false) => SendCommandHelper.Execute(args, false, capture);
 }
 
 [Command("$sendn", Description = "向当前高亮服务器发送 Minecraft 命令，用法: $sendn <命令>")]
-internal class SendNowCommand : ICommand
+public class SendNowCommand : ICommand
 {
     public int Execute(CommandArgs args,bool capture = false) => SendCommandHelper.Execute(args, true, capture);
 }
 
 // ========== $chat ==========
 [Command("$chat", Description = "与 AI 进行纯文本对话（无工具调用），用法: $chat [配置名] <消息> (默认使用 'default' 配置)")]
-internal class ChatCommand : ICommand
+public class ChatCommand : ICommand
 {
     public int Execute(CommandArgs args, bool capture = false)
     {
@@ -1041,7 +1041,7 @@ internal class ChatCommand : ICommand
 
 // ========== $agent ==========
 [Command("$agent", Description = "AI 代理模式，可执行命令（工具调用），用法: $agent [配置名] <指令> (默认使用 'default' 配置)")]
-internal class AgentCommand : ICommand
+public class AgentCommand : ICommand
 {
     public int Execute(CommandArgs args, bool capture = false)
     {
@@ -1100,7 +1100,7 @@ internal class AgentCommand : ICommand
 }
 
 // ========== $query / $queryn ==========
-internal static class QueryHelper
+public static class QueryHelper
 {
     public static int Execute(CommandArgs args, bool useHighlight = false, bool capture = false)
     {
@@ -1171,26 +1171,26 @@ internal static class QueryHelper
 }
 
 [Command("$query", Description = "查询指定服务器的 Query 信息，用法: $query <服务器名>")]
-internal class QueryCommand : ICommand
+public class QueryCommand : ICommand
 {
     public int Execute(CommandArgs args, bool capture = false) => QueryHelper.Execute(args, false, capture);
 }
 
 [Command("$queryn", Description = "查询当前高亮服务器的 Query 信息，用法: $queryn")]
-internal class QueryNowCommand : ICommand
+public class QueryNowCommand : ICommand
 {
     public int Execute(CommandArgs args, bool capture = false) => QueryHelper.Execute(args, true, capture);
 }
 
 [Command("$qn", Description = "查询当前高亮服务器的 Query 信息，用法: $qn")]
-internal class QueryNowAliasCommand : ICommand
+public class QueryNowAliasCommand : ICommand
 {
     public int Execute(CommandArgs args, bool capture = false) => QueryHelper.Execute(args, true, capture);
 }
 
 // ========== $readbuffer / $rbuf ==========
 [Command("$readbuffer", Description = "读取指定服务器的缓冲区内容（不清空），用法: $readbuffer <服务器名>")]
-internal class ReadBufferCommand : ICommand
+public class ReadBufferCommand : ICommand
 {
     public int Execute(CommandArgs args, bool capture = false)
     {
@@ -1229,14 +1229,14 @@ internal class ReadBufferCommand : ICommand
 }
 
 [Command("$rbuf", Description = "读取指定服务器的缓冲区内容（$readbuffer 的简写）")]
-internal class RbufCommand : ICommand
+public class RbufCommand : ICommand
 {
     public int Execute(CommandArgs args, bool capture = false) => new ReadBufferCommand().Execute(args, capture);
 }
 
 // ========== $updatebuffer / $ubuf ==========
 [Command("$updatebuffer", Description = "读取并清空指定服务器的缓冲区，用法: $updatebuffer <服务器名>")]
-internal class UpdateCommand : ICommand
+public class UpdateCommand : ICommand
 {
     public int Execute(CommandArgs args, bool capture = false)
     {
@@ -1275,14 +1275,14 @@ internal class UpdateCommand : ICommand
 }
 
 [Command("$ubuf", Description = "读取并清空指定服务器的缓冲区（$updatebuffer 的简写）")]
-internal class UbufCommand : ICommand
+public class UbufCommand : ICommand
 {
     public int Execute(CommandArgs args, bool capture = false) => new UpdateCommand().Execute(args, capture);
 }
 
 // ========== $file ==========
 [Command("$file", Description = "文件操作（仅限白名单目录），子命令: read <路径>, write <路径> <内容>, list <路径>, delete <路径>。支持占位符：%appdata% (不区分大小写)、%<服务器名>% (区分大小写)")]
-internal class FileCommand : ICommand
+public class FileCommand : ICommand
 {
     private static List<string> _allowedBaseDirs = new();
     private static readonly Dictionary<string, string> _serverPathMap = new(StringComparer.Ordinal);
@@ -1479,7 +1479,7 @@ internal class FileCommand : ICommand
 
 // ========== $checkwhitelist ==========
 [Command("$checkwhitelist", Description = "检查服务器的白名单列表，用法: $checkwhitelist <服务器名> [玩家名] (不指定玩家则输出全部)")]
-internal class CheckWhitelistCommand : ICommand
+public class CheckWhitelistCommand : ICommand
 {
     public int Execute(CommandArgs args, bool capture = false)
     {
@@ -1489,7 +1489,7 @@ internal class CheckWhitelistCommand : ICommand
 
 // ========== $checkban ==========
 [Command("$checkban", Description = "检查服务器的封禁列表（banned-players.json），用法: $checkban <服务器名> [玩家名] (不指定玩家则输出全部)")]
-internal class CheckBanCommand : ICommand
+public class CheckBanCommand : ICommand
 {
     public int Execute(CommandArgs args, bool capture = false)
     {
@@ -1499,7 +1499,7 @@ internal class CheckBanCommand : ICommand
 
 // ========== $checkbanip ==========
 [Command("$checkbanip", Description = "检查服务器的IP封禁列表（banned-ips.json），用法: $checkbanip <服务器名> [IP] (不指定IP则输出全部)")]
-internal class CheckBanIpCommand : ICommand
+public class CheckBanIpCommand : ICommand
 {
     public int Execute(CommandArgs args, bool capture = false)
     {
@@ -1507,7 +1507,7 @@ internal class CheckBanIpCommand : ICommand
     }
 }
 
-internal static class CheckListHelper
+public static class CheckListHelper
 {
     public static int Execute(CommandArgs args, string fileName, string listType, bool capture = false)
     {
@@ -1593,7 +1593,7 @@ internal static class CheckListHelper
 
 // ========== $backup ==========
 [Command("$backup", Description = "备份指定服务器的世界文件到 backups 目录，用法: $backup <服务器名> [备注]")]
-internal class BackupCommand : ICommand
+public class BackupCommand : ICommand
 {
     public int Execute(CommandArgs args, bool capture = false)
     {
@@ -1658,7 +1658,7 @@ internal class BackupCommand : ICommand
 
 // ========== $status ==========
 [Command("$status", Description = "查看指定服务器或所有服务器的资源占用（CPU/内存），用法: $status [服务器名] (不指定则显示全部)")]
-internal class StatusCommand : ICommand
+public class StatusCommand : ICommand
 {
     public int Execute(CommandArgs args, bool capture = false)
     {
@@ -1716,7 +1716,7 @@ internal class StatusCommand : ICommand
 
 // ========== $sendall ==========
 [Command("$sendall", Description = "向所有正在运行的服务器发送命令，用法: $sendall <命令>")]
-internal class SendAllCommand : ICommand
+public class SendAllCommand : ICommand
 {
     public int Execute(CommandArgs args, bool capture = false)
     {
@@ -1757,7 +1757,7 @@ internal class SendAllCommand : ICommand
 
 // ========== $stopall ==========
 [Command("$stopall", Description = "停止所有正在运行的服务器（优雅关闭）")]
-internal class StopAllCommand : ICommand
+public class StopAllCommand : ICommand
 {
     public int Execute(CommandArgs args, bool capture = false)
     {

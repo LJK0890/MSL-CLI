@@ -9,7 +9,7 @@ using static MSL_CLI.IO.IO;
 
 namespace MSL_CLI.Server;
 
-internal class ServerManager
+public class ServerManager
 {
     private ServerProperties serverConfig;
     private ServerArgument serverArgument;
@@ -308,7 +308,7 @@ internal class ServerManager
     public string GetServerPath() => serverPath;
 }
 
-internal enum ServerStatus
+public enum ServerStatus
 {
     Stopped,
     Starting,

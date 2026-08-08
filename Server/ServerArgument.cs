@@ -9,7 +9,7 @@ namespace MSL_CLI.Server;
 /// 负责解析 Minecraft 服务器启动脚本（run.bat/run.sh）中的参数，
 /// 提取 Java 路径、JVM 参数、jar 参数等。
 /// </summary>
-internal class ServerArgument
+public class ServerArgument
 {
     private string javaPath = "java";
     private string userJvmArgs = "-Xms2500M -Xmx4G";

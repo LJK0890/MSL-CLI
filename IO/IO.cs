@@ -64,7 +64,7 @@ public static class IO
     public static ConsoleO COStream { get; private set; } = new ConsoleO();
     public static LogO LOStream { get; private set; } = new LogO();
     /// <summary>
-    /// 开始捕获输出。之后所有 Print 调用（capture=true）将写入缓冲区，而非控制台。
+    /// 开始捕获输出。之后所有 Print 调用（capture=true）将写入缓冲区。
     /// </summary>
     public static void StartCapture()
     {
@@ -89,16 +89,13 @@ public static class IO
         }
     }
 
-    /// <summary>
-    /// 打印日志（支持捕获模式）
-    /// </summary>
+    /// <summary>打印日志（支持捕获模式）</summary>
     /// <param name="context">上下文</param>
     /// <param name="level">日志级别</param>
     /// <param name="message">消息</param>
     /// <param name="includeTimestamp">是否包含时间戳</param>
     /// <param name="capture">是否将此输出捕获到缓冲区（仅在捕获模式下有效）</param>
     /// <param name="end">是否在捕获完成后立即返回（仅当 capture=true 且 end=true 时，会停止捕获并返回全部内容）</param>
-    /// <returns>如果 end=true，返回捕获到的完整文本；否则返回 null</returns>
     public static void Print(string context, LogLevel level, string message, bool includeTimestamp = true, bool capture = false, bool end = false)
     {
         // 如果正在捕获模式且 capture=true，则写入缓冲区
