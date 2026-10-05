@@ -273,6 +273,7 @@ public class ServerManager : IServer, IDisposable
     // 解析 AI 触发命令（$chat/$agent/@ai），输出配置名、模式、消息与玩家名
     private bool TryParseAICommand(string raw, out string configName, out bool isAgent, out string message, out string player)
     {
+        throw new NotImplementedException("AI命令解析尚未实现");
         configName = "default";
         isAgent = false;
         message = string.Empty;
@@ -324,6 +325,7 @@ public class ServerManager : IServer, IDisposable
     // 解析 "$chat/$agent" 剩余部分：可选配置名 + 消息
     private bool ParseConfigAndMessage(string rest, out string configName, out string message)
     {
+        throw new NotImplementedException();
         configName = "default";
         message = rest.Trim();
 
@@ -345,6 +347,7 @@ public class ServerManager : IServer, IDisposable
     // 调用 AI 服务处理消息，并将回复发送到游戏内与控制台
     private async Task HandleAICommandAsync(string configName, bool isAgent, string message, string player)
     {
+        throw new NotImplementedException("AI命令处理尚未实现");
         try
         {
             // 与 AICommand 一致：configName 为 "default" 时改用 AppConfig 配置的默认 AI 配置
@@ -383,10 +386,10 @@ public class ServerManager : IServer, IDisposable
             return;
 
         // 检测 AI 触发命令
-        if (!data.Contains("[AI]") && TryParseAICommand(data, out string configName, out bool isAgent, out string message, out string player))
-        {
-            _ = Task.Run(async () => await HandleAICommandAsync(configName, isAgent, message, player));
-        }
+        // if (!data.Contains("[AI]") && TryParseAICommand(data, out string configName, out bool isAgent, out string message, out string player))
+        // {
+        //    _ = Task.Run(async () => await HandleAICommandAsync(configName, isAgent, message, player));
+        // }
 
         // 普通日志处理
         var match = System.Text.RegularExpressions.Regex.Match(data, @"^\[[^/]*/([A-Z]+)\]");
