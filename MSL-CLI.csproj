@@ -1,4 +1,4 @@
-﻿<Project Sdk="Microsoft.NET.Sdk">
+<Project Sdk="Microsoft.NET.Sdk">
 
   <PropertyGroup>
     <OutputType>Exe</OutputType>
@@ -12,6 +12,13 @@
     <PackageReference Include="McQuery.Net" Version="2.0.0" />
     <PackageReference Include="OpenAI" Version="2.12.0" />
     <PackageReference Include="System.Configuration.ConfigurationManager" Version="10.0.10" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <!-- 默认配置模板：随程序发布，供 %APPDATA% 下无用户配置时回退使用 -->
+    <None Update="config.default.json">
+      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+    </None>
   </ItemGroup>
 
 </Project>

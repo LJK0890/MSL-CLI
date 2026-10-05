@@ -25,4 +25,8 @@ public class AppConfig
     /// 默认使用的 AI 配置名称，未显式指定 AI 配置时生效。
     /// </summary>
     public string DefaultAIConfig { get; set; } = string.Empty;
+    /// <summary>
+    /// 代理命令授权配置，保存“总是允许”白名单与强制逐次询问的命令列表。
+    /// </summary>
+    public AgentPermissions AgentPermissions { get; set; } = new();
 }

@@ -16,7 +16,7 @@ public class AICommand : ICommand
     /// <summary>
     /// 命令用途说明，用于帮助信息展示。
     /// </summary>
-    public string Description => "AI命令，用法: $ai chat|agent [配置名] <消息/指令> | $ai default [模型名]";
+    public string Description => "AI命令，用法: $ai chat|agent [配置名] <消息/指令> | $ai default [配置名]";
 
     /// <summary>
     /// 执行 $ai 命令：根据子命令分发到 AI 对话、AI 代理或默认配置管理逻辑。
@@ -147,95 +147,5 @@ public class AICommand : ICommand
         var successMsg = $"默认AI配置已设置为: {rest}";
         output?.Write("Command", LogLevel.Success, successMsg);
         return new CommandResult(1, successMsg);
-    }
-}
-
-/// <summary>
-/// $agent 命令实现，AI 代理模式（可执行命令），内部复用 AICommand 并强制使用 agent 子命令。
-/// </summary>
-public class AgentCommand : ICommand
-{
-    /// <summary>
-    /// 命令名称 "$agent"。
-    /// </summary>
-    public string Name => "$agent";
-
-    /// <summary>
-    /// 命令用途说明，用于帮助信息展示。
-    /// </summary>
-    public string Description => "AI代理模式（可执行命令）";
-
-    /// <summary>
-    /// 内部复用的 AICommand 实例。
-    /// </summary>
-    private readonly AICommand _inner = new();
-
-    /// <summary>
-    /// 执行 $agent 命令：将输入注入 "agent" 子命令前缀后委托给 AICommand 处理。
-    /// </summary>
-    /// <param name="args">命令参数。</param>
-    /// <param name="output">可选的输出写入器。</param>
-    /// <returns>命令执行结果。</returns>
-    public async Task<CommandResult> ExecuteAsync(CommandArgs args, IOutputWriter? output = null)
-        => await _inner.ExecuteAsync(WithPrefix(args, "agent"), output);
-
-    /// <summary>
-    /// 构造带指定子命令前缀的新 CommandArgs，供委托调用时注入子命令。
-    /// </summary>
-    /// <param name="args">原始命令参数。</param>
-    /// <param name="sub">要注入的子命令名（如 "agent"）。</param>
-    /// <returns>携带子命令前缀的新 CommandArgs 实例。</returns>
-    private static CommandArgs WithPrefix(CommandArgs args, string sub)
-    {
-        var prefixed = new CommandArgs($"{sub} {args.Raw}".Trim(), args.ServerRegistry, args.AgentService, args.ConfigStore)
-        {
-            Parser = args.Parser
-        };
-        return prefixed;
-    }
-}
-
-/// <summary>
-/// $chat 命令实现，与 AI 对话，内部复用 AICommand 并强制使用 chat 子命令。
-/// </summary>
-public class ChatCommand : ICommand
-{
-    /// <summary>
-    /// 命令名称 "$chat"。
-    /// </summary>
-    public string Name => "$chat";
-
-    /// <summary>
-    /// 命令用途说明，用于帮助信息展示。
-    /// </summary>
-    public string Description => "与AI对话";
-
-    /// <summary>
-    /// 内部复用的 AICommand 实例。
-    /// </summary>
-    private readonly AICommand _inner = new();
-
-    /// <summary>
-    /// 执行 $chat 命令：将输入注入 "chat" 子命令前缀后委托给 AICommand 处理。
-    /// </summary>
-    /// <param name="args">命令参数。</param>
-    /// <param name="output">可选的输出写入器。</param>
-    /// <returns>命令执行结果。</returns>
-    public async Task<CommandResult> ExecuteAsync(CommandArgs args, IOutputWriter? output = null)
-        => await _inner.ExecuteAsync(WithPrefix(args, "chat"), output);
-
-    /// <summary>
-    /// 构造带指定子命令前缀的新 CommandArgs，供委托调用时注入子命令。
-    /// </summary>
-    /// <param name="args">原始命令参数。</param>
-    /// <param name="sub">要注入的子命令名（如 "chat"）。</param>
-    /// <returns>携带子命令前缀的新 CommandArgs 实例。</returns>
-    private static CommandArgs WithPrefix(CommandArgs args, string sub)
-    {
-        var prefixed = new CommandArgs($"{sub} {args.Raw}".Trim(), args.ServerRegistry, args.AgentService, args.ConfigStore)
-        {
-            Parser = args.Parser
-        };
-        return prefixed;
     }
 }

@@ -102,7 +102,7 @@ public class ServerManager : IServer, IDisposable
             _status = ServerStatus.Starting;
         }
         _output.Write(_name, LogLevel.Info, "正在启动...");
-        _process.Start(_argument.GetJavaPath(), _argument.GetJavaArgs(), _path);
+        _process.Start(_argument.JavaPath, _argument.GetJavaArgs(), _path);
         // 短暂等待进程启动完成后置为 Running
         await Task.Delay(1000);
         lock (_statusLock) _status = ServerStatus.Running;
@@ -193,40 +193,6 @@ public class ServerManager : IServer, IDisposable
             return null;
         }
     }
-
-    /// <summary>
-    /// 从 ops.json 读取管理员（OP）名单。
-    /// </summary>
-    /// <returns>OP 名称列表；文件不存在或解析失败时返回空列表。</returns>
-    public List<string> GetOps()
-    {
-        string opsFile = System.IO.Path.Combine(_path, "ops.json");
-        if (!File.Exists(opsFile)) return new List<string>();
-        try
-        {
-            string json = File.ReadAllText(opsFile);
-            using var doc = JsonDocument.Parse(json);
-            if (doc.RootElement.ValueKind != JsonValueKind.Array) return new List<string>();
-            var list = new List<string>();
-            foreach (var elem in doc.RootElement.EnumerateArray())
-            {
-                if (elem.TryGetProperty("name", out var nameElem))
-                {
-                    string? name = nameElem.GetString();
-                    if (!string.IsNullOrEmpty(name)) list.Add(name);
-                }
-            }
-            return list;
-        }
-        catch { return new List<string>(); }
-    }
-
-    /// <summary>
-    /// 判断指定玩家是否为管理员（忽略大小写）。
-    /// </summary>
-    /// <param name="player">玩家名称。</param>
-    /// <returns>是管理员返回 true，否则返回 false。</returns>
-    public bool IsOp(string player) => GetOps().Contains(player, StringComparer.OrdinalIgnoreCase);
 
     /// <summary>
     /// 获取输出缓冲区内容（不清空）。

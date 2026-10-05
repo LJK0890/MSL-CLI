@@ -4,7 +4,10 @@ using System.Collections.Concurrent;
 namespace MSL_CLI.CLI;
 
 /// <summary>
-/// 控制台输入读取器，通过后台线程读取控制台输入并放入队列，再由处理任务逐个触发事件。
+/// 控制台输入读取器，通过后台线程持续读取控制台输入并放入队列。
+/// 队列中的每一行按“先发给交互请求、其次触发事件”的顺序分发：
+/// 当有组件通过 <see cref="ReadLineAsync"/> 请求独占输入时，该行会作为交互应答回传，
+/// 而不会触发 <see cref="OnInputReceived"/>；否则该行照常触发命令事件。
 /// </summary>
 public class ConsoleInputReader : IInputReader
 {
@@ -19,6 +22,13 @@ public class ConsoleInputReader : IInputReader
     // 运行标志，置为 false 时读取循环退出
     private volatile bool _running = true;
 
+    // 保护 _interactive 的同步锁，确保同一时刻只有一个交互请求处于挂起状态
+    private readonly object _interactiveLock = new();
+    // 当前挂起的交互请求；为 null 表示没有组件在独占输入
+    private TaskCompletionSource<string>? _interactive;
+    // 实际读取一行的委托（默认读取控制台，可注入以便测试）
+    private readonly Func<string?> _readLine;
+
     /// <summary>
     /// 每当从控制台读取到一行有效输入时触发，参数为该行内容。
     /// </summary>
@@ -27,8 +37,13 @@ public class ConsoleInputReader : IInputReader
     /// <summary>
     /// 初始化 <see cref="ConsoleInputReader"/> 的新实例，启动队列处理任务并创建后台读取线程。
     /// </summary>
-    public ConsoleInputReader()
+    /// <param name="readLine">
+    /// 可选的读行委托，用于替换默认的 <see cref="Console.ReadLine"/>；
+    /// 返回 null 表示输入流已结束，读取循环随之退出。
+    /// </param>
+    public ConsoleInputReader(Func<string?>? readLine = null)
     {
+        _readLine = readLine ?? Console.ReadLine;
         _processTask = Task.Run(ProcessQueue);
         _readerThread = new Thread(ReadLoop) { IsBackground = true };
     }
@@ -49,27 +64,83 @@ public class ConsoleInputReader : IInputReader
         _running = false;
         _queue.CompleteAdding();
         _cts.Cancel();
+        // 唤醒仍在等待交互应答的调用方，避免其永久阻塞
+        lock (_interactiveLock)
+        {
+            _interactive?.TrySetResult(string.Empty);
+        }
         _readerThread.Join(1000);
         try { _processTask.Wait(2000); } catch { }
     }
 
     /// <summary>
-    /// 后台读取循环：持续读取控制台输入行并加入队列。
+    /// 请求独占读取控制台的一行输入，用于需要向用户提问并等待作答的场景。
+    /// 在请求挂起期间，读取到的行会作为本方法的返回值，而不会触发 <see cref="OnInputReceived"/>。
+    /// 若已有其他交互请求挂起，或发生超时/取消，则返回空字符串。
     /// </summary>
-    private void ReadLoop()
+    /// <param name="cancellationToken">取消令牌，取消时本方法立即返回空字符串。</param>
+    /// <param name="timeout">可选的等待超时；超时后返回空字符串并解除独占。</param>
+    /// <returns>用户输入的整行文本；超时、取消或冲突时为空字符串。</returns>
+    public async Task<string> ReadLineAsync(CancellationToken cancellationToken = default, TimeSpan? timeout = null)
     {
-        while (_running)
+        var tcs = new TaskCompletionSource<string>(TaskCreationOptions.RunContinuationsAsynchronously);
+
+        // 抢占交互槽位：已有挂起请求时直接放弃，避免两个提问互相抢答
+        lock (_interactiveLock)
         {
-            var line = Console.ReadLine();
-            if (line != null && _running)
+            if (_interactive != null)
+                return string.Empty;
+            _interactive = tcs;
+        }
+
+        // 链接外部取消令牌与超时，两者都会让本次请求提前结束
+        using var timeoutCts = timeout.HasValue ? new CancellationTokenSource(timeout.Value) : null;
+        using var linked = timeoutCts != null
+            ? CancellationTokenSource.CreateLinkedTokenSource(cancellationToken, timeoutCts.Token)
+            : CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+
+        using var registration = linked.Token.Register(() => tcs.TrySetResult(string.Empty));
+
+        try
+        {
+            return await tcs.Task.ConfigureAwait(false);
+        }
+        finally
+        {
+            // 无论正常应答还是超时取消，都必须释放槽位
+            lock (_interactiveLock)
             {
-                _queue.Add(line, _cts.Token);
+                if (ReferenceEquals(_interactive, tcs))
+                    _interactive = null;
             }
         }
     }
 
     /// <summary>
-    /// 后台队列处理循环：从队列取出输入行并触发 <see cref="OnInputReceived"/> 事件。
+    /// 后台读取循环：持续读取输入行并加入队列。读取返回 null 时视为输入流结束并退出循环。
+    /// </summary>
+    private void ReadLoop()
+    {
+        while (_running)
+        {
+            var line = _readLine();
+            if (line == null)
+                break;
+            if (!_running)
+                break;
+
+            try
+            {
+                _queue.Add(line, _cts.Token);
+            }
+            catch (OperationCanceledException) { break; }
+            catch (InvalidOperationException) { break; }
+        }
+    }
+
+    /// <summary>
+    /// 后台队列处理循环：从队列取出输入行，优先投递给挂起的交互请求，否则触发
+    /// <see cref="OnInputReceived"/> 事件。
     /// </summary>
     private void ProcessQueue()
     {
@@ -77,6 +148,16 @@ public class ConsoleInputReader : IInputReader
         {
             foreach (var line in _queue.GetConsumingEnumerable(_cts.Token))
             {
+                TaskCompletionSource<string>? waiter;
+                lock (_interactiveLock)
+                {
+                    waiter = _interactive;
+                }
+
+                // 有组件正在等待应答时，本行属于该交互，不再当作命令处理
+                if (waiter != null && waiter.TrySetResult(line))
+                    continue;
+
                 OnInputReceived?.Invoke(this, line);
             }
         }

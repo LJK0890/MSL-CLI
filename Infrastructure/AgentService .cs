@@ -13,6 +13,7 @@ namespace MSL_CLI.Infrastructure;
 /// <summary>
 /// 基于 OpenAI 的智能体服务实现，负责处理聊天与智能体请求。
 /// 请求通过无界通道排队，由单个后台消费者串行处理，处理结果经 TaskCompletionSource 回传给调用方。
+/// 智能体执行的每条命令都必须先通过授权网关获得操作员许可，无法确认时一律拒绝。
 /// </summary>
 public class OpenAiAgentService : IAgentService, IDisposable
 {
@@ -24,6 +25,8 @@ public class OpenAiAgentService : IAgentService, IDisposable
     private readonly IOutputWriter _output;
     /// <summary>命令解析器，用于获取命令描述列表以生成智能体提示词。</summary>
     private readonly ICommandParser _commandParser;
+    /// <summary>命令授权网关，负责在执行代理命令前向本地操作员请求许可。</summary>
+    private readonly IAgentPermissionGateway _permissions;
 
     // ---------- 队列相关 ----------
     /// <summary>
@@ -39,6 +42,8 @@ public class OpenAiAgentService : IAgentService, IDisposable
         public string Message { get; init; } = string.Empty;
         /// <summary>是否为智能体请求。</summary>
         public bool IsAgent { get; init; }  // true=Agent, false=Chat
+        /// <summary>请求是否来自本地控制台；只有控制台请求才有资格向操作员请求授权。</summary>
+        public bool FromConsole { get; init; }
         /// <summary>用于将处理结果（模型名称与响应文本）回传给等待方。</summary>
         public TaskCompletionSource<(string model, string response)> Tcs { get; } = new();
         /// <summary>请求关联的取消令牌。</summary>
@@ -63,16 +68,19 @@ public class OpenAiAgentService : IAgentService, IDisposable
     /// <param name="serviceProvider">服务提供者，用于解析依赖（如命令执行器）。</param>
     /// <param name="output">输出写入器，用于记录日志。</param>
     /// <param name="commandParser">命令解析器，用于获取命令描述列表。</param>
+    /// <param name="permissions">命令授权网关，用于执行代理命令前请求操作员许可。</param>
     public OpenAiAgentService(
         AppConfig config,
         IServiceProvider serviceProvider,
         IOutputWriter output,
-        ICommandParser commandParser)
+        ICommandParser commandParser,
+        IAgentPermissionGateway permissions)
     {
         _configs = config.AIConfigs;
         _serviceProvider = serviceProvider;
         _output = output;
         _commandParser = commandParser;
+        _permissions = permissions;
 
         // 启动后台消费者
         _processorTask = Task.Run(ProcessRequestsAsync);
@@ -104,6 +112,7 @@ public class OpenAiAgentService : IAgentService, IDisposable
             ConfigName = configName,
             Message = message,
             IsAgent = false,
+            FromConsole = source == null,
             CancellationToken = _cts.Token
         };
         await _channel.Writer.WriteAsync(req, _cts.Token);
@@ -135,6 +144,7 @@ public class OpenAiAgentService : IAgentService, IDisposable
             ConfigName = configName,
             Message = instruction,
             IsAgent = true,
+            FromConsole = source == null,
             CancellationToken = _cts.Token
         };
         await _channel.Writer.WriteAsync(req, _cts.Token);
@@ -178,8 +188,8 @@ public class OpenAiAgentService : IAgentService, IDisposable
                 {
                     // 按请求类型分派到智能体或聊天执行逻辑
                     var result = req.IsAgent
-                        ? await ExecuteAgentAsync(req.ConfigName, sourceInfo + req.Message)
-                        : await ExecuteChatAsync(req.ConfigName, sourceInfo + req.Message);
+                        ? await ExecuteAgentAsync(req, sourceInfo + req.Message)
+                        : await ExecuteChatAsync(req, sourceInfo + req.Message);
 
                     req.Tcs.TrySetResult(result);
                 }
@@ -205,12 +215,12 @@ public class OpenAiAgentService : IAgentService, IDisposable
     /// <summary>
     /// 执行一次普通聊天调用：创建客户端并请求模型完成对话。
     /// </summary>
-    /// <param name="configName">AI 配置名称。</param>
+    /// <param name="req">发起本次调用的请求。</param>
     /// <param name="message">聊天消息（已包含来源信息前缀）。</param>
     /// <returns>包含所用模型名称与模型响应文本的元组。</returns>
-    private async Task<(string model, string response)> ExecuteChatAsync(string configName, string message)
+    private async Task<(string model, string response)> ExecuteChatAsync(Request req, string message)
     {
-        var cfg = GetConfig(configName);
+        var cfg = GetConfig(req.ConfigName);
         var client = CreateClient(cfg);
         var chat = client.GetChatClient(cfg.Model);
         var result = await chat.CompleteChatAsync(message);
@@ -218,27 +228,41 @@ public class OpenAiAgentService : IAgentService, IDisposable
     }
 
     /// <summary>
-    /// 执行一次智能体调用：模型可调用 execute_command / sleep 工具完成多步任务。
+    /// 执行一次智能体调用：模型可调用 request_permission / execute_command / sleep 工具完成多步任务。
     /// 在最大迭代次数内循环处理工具调用，直至模型给出最终回答或达到迭代上限。
     /// </summary>
-    /// <param name="configName">AI 配置名称。</param>
+    /// <param name="req">发起本次调用的请求，提供来源与取消令牌。</param>
     /// <param name="instruction">智能体指令（已包含来源信息前缀）。</param>
     /// <returns>包含所用模型名称与模型响应文本的元组；达到最大迭代次数时返回提示文本。</returns>
-    private async Task<(string model, string response)> ExecuteAgentAsync(string configName, string instruction)
+    private async Task<(string model, string response)> ExecuteAgentAsync(Request req, string instruction)
     {
-        var cfg = GetConfig(configName);
+        var cfg = GetConfig(req.ConfigName);
         var client = CreateClient(cfg);
         var chat = client.GetChatClient(cfg.Model);
 
-        // 定义模型可调用的函数工具：执行命令与等待
+        // 定义模型可调用的函数工具：申请授权、执行命令与等待
         var tools = new List<ChatTool>
         {
-            ChatTool.CreateFunctionTool("execute_command", "执行$开头命令", BinaryData.FromObjectAsJson(new
-            {
-                type = "object",
-                properties = new { command = new { type = "string" } },
-                required = new[] { "command" }
-            })),
+            ChatTool.CreateFunctionTool("request_permission",
+                "在执行命令前向操作员申请授权。已获白名单放行的命令无需调用。必须先获得允许才能调用 execute_command。",
+                BinaryData.FromObjectAsJson(new
+                {
+                    type = "object",
+                    properties = new
+                    {
+                        command = new { type = "string", description = "需要申请授权的完整$命令，例如 $stop server1" },
+                        reason = new { type = "string", description = "执行该命令的理由" }
+                    },
+                    required = new[] { "command" }
+                })),
+            ChatTool.CreateFunctionTool("execute_command",
+                "执行$开头命令，需已通过授权（在允许列表中或已获批）。",
+                BinaryData.FromObjectAsJson(new
+                {
+                    type = "object",
+                    properties = new { command = new { type = "string" } },
+                    required = new[] { "command" }
+                })),
             ChatTool.CreateFunctionTool("sleep", "等待秒数", BinaryData.FromObjectAsJson(new
             {
                 type = "object",
@@ -250,7 +274,7 @@ public class OpenAiAgentService : IAgentService, IDisposable
         // 组装系统提示与用户指令消息
         var messages = new List<ChatMessage>
         {
-            ChatMessage.CreateSystemMessage(GetAgentPrompt(configName)),
+            ChatMessage.CreateSystemMessage(GetAgentPrompt(req.ConfigName)),
             ChatMessage.CreateUserMessage(instruction)
         };
 
@@ -281,7 +305,7 @@ public class OpenAiAgentService : IAgentService, IDisposable
                         string toolResult;
                         try
                         {
-                            toolResult = await ExecuteToolAsync(cfg.Model, tc.FunctionName, argsJson);
+                            toolResult = await ExecuteToolAsync(req, cfg.Model, tc.FunctionName, argsJson);
                         }
                         catch (Exception ex)
                         {
@@ -325,23 +349,46 @@ public class OpenAiAgentService : IAgentService, IDisposable
         => new OpenAIClient(new ApiKeyCredential(cfg.ApiKey), new OpenAIClientOptions { Endpoint = new Uri(cfg.Url) });
 
     /// <summary>
-    /// 执行模型发起的函数调用（execute_command / sleep）。
+    /// 执行模型发起的函数调用（request_permission / execute_command / sleep）。
     /// </summary>
+    /// <param name="req">发起本次工具调用的请求，提供来源与取消令牌。</param>
     /// <param name="model">当前使用的模型名称，用于日志标识。</param>
     /// <param name="func">函数名称。</param>
     /// <param name="argsJson">函数参数的 JSON 字符串。</param>
     /// <returns>工具执行结果文本；遇到未知工具时返回"未知工具"。</returns>
-    private async Task<string> ExecuteToolAsync(string model, string func, string argsJson)
+    private async Task<string> ExecuteToolAsync(Request req, string model, string func, string argsJson)
     {
         // 解析工具参数 JSON
         using var doc = JsonDocument.Parse(argsJson);
         var root = doc.RootElement;
+
+        // 向操作员申请命令授权
+        if (func == "request_permission")
+        {
+            var cmd = root.TryGetProperty("command", out var permProp) ? permProp.GetString() : null;
+            if (string.IsNullOrEmpty(cmd)) return "空命令";
+
+            var reason = root.TryGetProperty("reason", out var reasonProp) ? reasonProp.GetString() : null;
+
+            _output.Write($"AI/{model}", LogLevel.Info, $"申请执行授权: {cmd}");
+            var permission = await _permissions.RequestAsync(cmd, reason, req.FromConsole, req.CancellationToken);
+
+            // 获批后登记一次性放行，使随后的 execute_command 无需重复提问
+            if (permission.IsAllowed)
+                _permissions.GrantSessionPass(cmd);
+
+            return permission.message;
+        }
 
         // 执行 $ 开头的服务器命令
         if (func == "execute_command")
         {
             var cmd = root.TryGetProperty("command", out var cmdProp) ? cmdProp.GetString() : null;
             if (string.IsNullOrEmpty(cmd)) return "空命令";
+
+            // 硬性拦截：白名单放行或本次已获批才允许执行，否则就地请求授权
+            var message = await EnsureAuthorizedAsync(req, model, cmd);
+            if (message != null) return message;
 
             _output.Write($"AI/{model}", LogLevel.Info, $"执行命令: {cmd}");
             // 通过命令执行器执行命令，并收集其输出
@@ -359,11 +406,42 @@ public class OpenAiAgentService : IAgentService, IDisposable
             // 无效时长直接返回错误提示
             if (dur <= 0) return "无效等待时间";
             _output.Write($"AI/{model}", LogLevel.Info, $"休眠 {dur} 秒");
-            await Task.Delay(dur * 1000);
+            await Task.Delay(dur * 1000, req.CancellationToken);
             return $"已休眠 {dur} 秒";
         }
         // 未匹配任何已知工具
         return "未知工具";
+    }
+
+    /// <summary>
+    /// 确保一条命令已获授权：优先消费“先询问后执行”留下的会话放行记录，
+    /// 其次命中持久化白名单，最后就地发起授权请求。
+    /// </summary>
+    /// <param name="req">发起本次工具调用的请求。</param>
+    /// <param name="model">当前模型名称，用于日志标识。</param>
+    /// <param name="command">即将执行的命令。</param>
+    /// <returns>已获授权时返回 null；否则返回应当回传给模型的拒绝说明。</returns>
+    private async Task<string?> EnsureAuthorizedAsync(Request req, string model, string command)
+    {
+        // 该命令此前已通过 request_permission 获得一次性放行
+        if (_permissions.TryConsumeSessionPass(command))
+            return null;
+
+        // 命中持久化白名单，无需询问
+        if (_permissions.IsAllowedByPolicy(command))
+            return null;
+
+        // 未获授权：就地请求许可，避免模型跳过 request_permission 直接执行
+        _output.Write($"AI/{model}", LogLevel.Warning, $"命令未获授权，正在请求确认: {command}");
+        var permission = await _permissions.RequestAsync(
+            command,
+            "模型直接请求执行该命令",
+            req.FromConsole,
+            req.CancellationToken);
+
+        return permission.IsAllowed
+            ? null
+            : $"命令未执行：{permission.message}。请改用 request_permission 再次申请，或向操作员说明情况。";
     }
 
     /// <summary>

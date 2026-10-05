@@ -73,6 +73,7 @@ MSL-CLI/
 │   ├── CompositeOutputWriter.cs   # Multiplexed output (console + file)
 │   ├── FileOutputWriter.cs        # File logging
 │   ├── AgentService .cs           # OpenAI chat / agent service
+│   ├── AgentPermissionGateway.cs  # Operator authorization for agent commands
 │   └── Commands/                  # All `$`-prefixed command implementations
 └── CLI/                           # CLI adapters (console IO)
     ├── ConsoleOutputWriter.cs
@@ -110,7 +111,7 @@ Configuration lives in `%APPDATA%\MSL_CLI\config.json` (on first run it may load
 ```jsonc
 {
   "EnableAI": true,                                  // whether AI is enabled
-  "DefaultAIConfig": "default",                      // default AI config name (used when $ai/$chat/$agent omit one)
+  "DefaultAIConfig": "default",                      // default AI config name (used when $ai omits one)
   "AIConfigs": {                                     // AI service configs (you may define several)
     "default": {
       "Url": "https://api.openai.com/v1",
@@ -126,13 +127,26 @@ Configuration lives in `%APPDATA%\MSL_CLI\config.json` (on first run it may load
   },
   "ServerPaths": {                                   // server registry: name -> path
     "survival": "D:\\Minecraft\\survival"
+  },
+  "AgentPermissions": {                              // agent command authorization
+    "AllowList": [ "$server buf update survival" ],   // always-allowed commands ("*" suffix = prefix match)
+    "AlwaysAskCommands": [ "$exec" ]                 // must be confirmed on every execution
   }
 }
 ```
 
 **API Key**: When `UseApiKeyEnv = true`, the key is read from the environment variable named by `ApiKeyEnv`, so no plaintext key needs to be stored in the file.
 
-**DefaultAIConfig**: When `$ai` / `$chat` / `$agent` do not specify a config name, they use the config pointed to by `DefaultAIConfig` (an error "未设置默认AI配置" is shown if it is empty). View or change it at runtime with `$ai default [config]`.
+**Config persistence & recovery**:
+
+- Config is read from `%APPDATA%\MSL_CLI\config.json` first; on absence or parse failure it falls back to `config.default.json` next to the executable, then to the built-in defaults.
+- Loading **normalizes** the result: `null` collections (`AIConfigs`, `ServerPaths`, `AgentPermissions` and their sub-lists) are repaired and `null` dictionary entries are dropped, so a damaged field cannot crash startup.
+- Saving uses backup → temp file → atomic replace: the previous file is copied to `config.json.bak` before being overwritten, and a failed write cleans up its `.tmp` leftover.
+- A parse failure is reported to the console and log instead of being silently swallowed, and the original file is **not** rewritten during loading.
+- To roll back, copy `config.json.bak` over `config.json`; `FileConfigurationStore.RestoreFromBackup()` does the same in-process and preserves the damaged file as `config.json.corrupt`.
+- `$exec` is a **floor** for per-execution confirmation: even if it is manually removed from `AlwaysAskCommands`, it is restored on load.
+
+**DefaultAIConfig**: When `$ai` does not specify a config name, it uses the config pointed to by `DefaultAIConfig` (an error "未设置默认AI配置" is shown if it is empty). View or change it at runtime with `$ai default [config]`.
 
 You can also inspect/modify configuration at runtime — see [Configuration Commands](#configuration-commands).
 
@@ -140,96 +154,85 @@ You can also inspect/modify configuration at runtime — see [Configuration Comm
 
 ## Command Reference
 
-All commands are prefixed with `$` and auto-registered via reflection.
-
-### General
+All commands are prefixed with `$` and auto-registered via reflection. There are **only 8 top-level commands**; everything else is a subcommand/action.
 
 | Command | Description |
 | --- | --- |
-| `$help` | Show all available commands and their descriptions |
-| `$exit` | Exit the program (stops all servers first) |
-| `$list` | List all configured servers and their status |
-| `$status [server]` | Show process status (default: all — PID, memory, CPU time) |
-| `$reload` | Reload config and rebuild the server list (skips running servers) |
+| `$ai chat\|agent [config] <message/instruction>` | Chat / agent execution; `default [config]` views or sets the default AI config |
+| `$app cfg\|exit\|reload\|ptcfg ...` | Application-level operations (below) |
+| `$exec <command/script path> [args...]` | Run a system command or script (an AI Agent must confirm first) |
+| `$file read\|write\|list\|delete <path> [content]` | Sandboxed file ops, whitelist directories only |
+| `$help [command]` | No argument: list all commands with descriptions; with a name: that command's detailed usage |
+| `$hl <server>` | Switch the highlighted server; no argument shows the current one |
+| `$list` | **List command names only** (no descriptions) |
+| `$server <action> ...` | Server management (below) |
 
-### Server Management
+Use `$list` for a quick name dump and `$help <command>` for one command's detailed usage.
 
-| Command | Description |
-| --- | --- |
-| `$run <server>` | Start the given server (auto-highlights if none set) |
-| `$stop <server> [-f]` | Stop a server (`-f` force-kills) |
-| `$stopall` | Stop all running servers |
-| `$send <server> <command>` | Send a Minecraft command to a server |
-| `$sendall <command>` | Send a command to all running servers |
-| `$server <subcommand> ...` | Unified server management entry (see below) |
-| `$highlight / $hl <server>` | Switch the highlighted server; no arg shows the current one |
-| `$serverargument get\|set ...` | View/modify server launch arguments |
-
-`$server` subcommands:
+### `$app`
 
 ```
-$server run    <server|all> [-f]     Start a server
-$server stop   <server|all> [-f]     Stop a server
-$server send   <server|all> <cmd>    Send a command
-$server buffer read|update <server>  Read/clear the buffer
-$server config get|set <server>...   View/modify server.properties
-$server query  <server|all>          Query server Query info
-$server status [server]              Show process status
+$app cfg get [path]          Read app config; with no path, print the whole JSON
+$app cfg getall              Print the entire config
+$app cfg set <path> <value>  Write config (a missing dictionary key in the path is created)
+$app cfg rm <path>           Delete a dictionary entry, e.g. ServerPaths.tga; properties cannot be removed
+$app exit                    Exit the program (stops all servers first)
+$app reload                  Reload config and rebuild the server list
+$app ptcfg                   Print the current config (debug)
 ```
+
+Dot paths look like `AIConfigs.default.Url`, `ServerPaths.tga`, `AgentPermissions.AllowList`.
+
+### `$server`
+
+```
+$server cfg get|getall|set|rm [server] [key] [value]   server.properties
+$server arg get|set|rm <server> <arg> [value...]       launch arguments
+$server ck wl|op|bp|bip <server|all> [name]            list checks
+$server buf read|update <server>                       read / read-and-clear the output buffer
+$server ls                                             list all servers and their status
+$server bp <server> [remark]                           back up the world directory
+$server query <server|all>                             query server Query info
+$server status [server|all]                            show process status
+$server stop <server|all> [-f]                         stop a server
+$server run <server>                                   start a server
+$server send <server|all> <command>                    send a Minecraft command
+```
+
+`$server cfg` falls back to the highlighted server when the server name is omitted; `cfg rm` preserves comments and other keys.
+
+**`$server ck` subcommands**: `wl` (whitelist), `op` (operators), `bp` (banned players), `bip` (banned IPs). Without a name it lists everything; with a name it checks membership.
+
+**`$server arg` launch argument model** (`ServerArgument`):
+
+| Argument | Type | Permissions | Notes |
+| --- | --- | --- | --- |
+| `javaPath` | String | read/write, **not deletable** | Java executable path; empty values are rejected |
+| `jvmArgs` | List | read/write/delete (single or all) | persisted to `user_jvm_args.txt` |
+| `jarArgs` | String | read/write, **not deletable** | accepts `server.jar`, `@libraries/.../win_args.txt`, `-jar server.jar` |
+| `appendArgs` | List | read/write/delete (single or all) | e.g. `nogui` |
+| `javaArgs` / `all` | — | read-only | aggregate view |
+
+```bash
+$server arg get yz jvmArgs                 # indexed listing ([0] -Xms8G ...)
+$server arg get yz jvmArgs element 1       # read one element
+$server arg set yz jvmArgs -Xms4G -Xmx4G   # replace the whole list
+$server arg set yz javaPath C:\Java\bin\java.exe
+$server arg rm  yz jvmArgs -Xmx4G          # delete one element
+$server arg rm  yz jvmArgs all             # clear the list
+$server arg rm  yz javaPath                # rejected (javaPath is not deletable)
+```
+
+The launch script is rebuilt as `{javaPath} @user_jvm_args.txt {jarArgs} {appendArgs}`, matching the official Forge / NeoForge layout, and files are left untouched when nothing changed.
 
 **Highlight server**: once a server is highlighted, non-`$` input typed at the console is forwarded to it.
 
-### Buffer / Config
+> Note: the command set is organized into **8 top-level entry points** (`$ai`, `$app`, `$exec`, `$file`, `$help`, `$hl`, `$list`, `$server`); everything else is a subcommand/action. The old top-level entries (`$exit`, `$reload`, `$printconfig`, `$run`, `$stop`, `$stopall`, `$send`, `$sendall`, `$query`, `$status`, `$backup`, `$check`, `$highlight`, `$serverconfig`, `$serverargument`, `$bufferread`, `$bufferupdate`, `$appconfig*`, `$serverconfig*`) were all removed.
+>
+> The `$chat` / `$agent` shorthand aliases are gone too — use `$ai chat [config] <message>` and `$ai agent [config] <instruction>`.
 
-| Command | Description |
-| --- | --- |
-| `$bufferread / $bufr <server>` | Read the server buffer (without clearing) |
-| `$bufferupdate / $bufu <server>` | Read and clear the server buffer |
-| `$serverconfigget / $scg [server] [key]` | View `server.properties` (server name optional — uses highlight) |
-| `$serverconfigset / $scs [server] <key> <value>` | Modify `server.properties` (atomic write) |
-| `$serverargument get\|set ...` | View/modify launch script args (javapath/jvmargs/jarargs/append) |
 
-### Configuration Commands
-
-| Command | Description |
-| --- | --- |
-| `$appconfigget / $acg [path]` | Get an app config value (dot path, e.g. `AIConfigs.default.Url`) |
-| `$appconfiggetall / $acga` | Get the entire config |
-| `$appconfigset / $acs <path> <value>` | Set an app config value and save |
-| `$printconfig` | Print the current config to the console (debug) |
-
-### Backup & Files
-
-| Command | Description |
-| --- | --- |
-| `$backup <server> [remark]` | Zip a server's world directory into `backups` |
-| `$file <read\|write\|list\|delete> <path>` | Sandboxed file ops; supports `%appdata%`, `%<server>%` placeholders; whitelist only |
-
-### Checks
-
-| Command | Description |
-| --- | --- |
-| `$check <subcommand> <server> [name]` | Subcommands: `whitelist/wl`, `op`, `banplayer/bp`, `banip/bip`. Without a name, lists all; with a name, checks membership |
-
-### System Execution
-
-| Command | Description |
-| --- | --- |
-| `$exec <command/script path> [args...]` | Run a system command or script (AI Agent must confirm before executing) |
-
-### AI
-
-| Command | Description |
-| --- | --- |
-| `$ai chat [config] <message>` | Chat with the AI |
-| `$ai agent [config] <instruction>` | Run an instruction in Agent mode (may call tools to operate servers) |
-| `$ai default [config]` | Show the current default AI config; with an argument, set `DefaultAIConfig` and persist it |
-| `$chat [config] <message>` | Shorthand for `$ai chat` |
-| `$agent [config] <instruction>` | Shorthand for `$ai agent` |
-
-> Note: `$chat`, `$agent` and `$ai` share the same parsing logic. When no config name is given (or the first token is `default`), the config pointed to by `DefaultAIConfig` is used.
-
-Additionally, if server console output contains text starting with `$chat`, `$agent`, or `@ai ...`, it is treated as an AI trigger (allowing in-game players to trigger AI replies).
+Additionally, if server console output contains text of the form `@ai <config> chat|agent <content>`, it is recognized as an AI trigger (allowing in-game players to trigger AI replies). That recognition path is currently disabled (the relevant call in `ServerManager` is commented out, and its follow-up handler throws `NotImplementedException`).
 
 ---
 
@@ -243,18 +246,43 @@ MSL-CLI follows the **dependency inversion** principle:
 
 The DI container is wired in `Program.cs`; `CommandParser` scans for all types implementing `ICommand` via reflection and registers them automatically.
 
-The AI agent (`OpenAiAgentService`) exposes two tools via OpenAI Function Calling:
+### Command layout
 
-- `execute_command`: run a `$`-prefixed command.
+Commands live in `Infrastructure/Commands/`, each file owning one responsibility — no command reaches into another's implementation, and none is buried in the server layer:
+
+- **Each of the 8 top-level commands has its own file**: `AICommand.cs`, `AppCommand.cs`, `ExecCommand.cs`, `FileCommand.cs`, `HelpCommand.cs`, `HighlightCommand.cs`, `ListCommand.cs`, `ServerCommand.cs`.
+- `$server` is an action dispatcher (`ServerCommand.cs`). `cfg`/`arg`/`ck`/`buf` go to dedicated handlers — `ServerConfigHandler.cs`, `ServerArgsHandler.cs`, `ServerCheckHandler.cs`, `ServerBufferHandler.cs` — while `ls`/`bp`/`query`/`status`/`stop`/`run`/`send` are implemented in `ServerCommand.cs` and `ServerActionHandlers.cs`. Shared target resolution is in `ServerTargetResolver.cs`.
+- Reading a server's list files (`ops.json`, `whitelist.json`, `banned-players.json`, `banned-ips.json`) lives in `$server ck` (`ServerCheckHandler.cs`). The server port exposes no `GetOps`/`IsOp` helpers.
+- App-config dot-path reading/writing lives in `$app cfg` (`AppConfigPath.cs` + `AppCommand.cs`).
+- **There are no subcommand-level entry points any more**: `$serverconfig*`, `$serverargument`, `$bufferread`, `$bufferupdate`, `$appconfig*`, `$run`, `$stop`, `$send` and friends were all removed; they are reachable only as a top-level command plus an action.
+
+The AI agent (`OpenAiAgentService`) exposes three tools via OpenAI Function Calling:
+
+- `request_permission`: ask the local operator to authorize a command before it runs, returning the decision as text.
+- `execute_command`: run a `$`-prefixed command — **only after** it is authorized (allow-list hit or a granted request).
 - `sleep`: wait a number of seconds.
 
 Following the "execute → wait → verify log (retry on failure)" loop from the system prompt, the Agent can complete multi-step operations automatically.
+
+### Agent command authorization
+
+Every command the agent runs is gated, so an unconfirmed command can never execute:
+
+1. `execute_command` first checks whether the command has a session pass (from a prior `request_permission`) or matches the persisted allow-list.
+2. If not, it asks the local operator inline, so skipping `request_permission` cannot bypass the check.
+3. Requests that do **not** originate from the console (for example in-game player triggers) are never prompted; they are refused, because only the local operator may authorize commands.
+
+The prompt offers `y` (allow once), `a` (always allow, persisted to `AgentPermissions.AllowList`), and `n` (deny); anything unrecognized is treated as a denial.
+
+`$exec` is on the built-in `AlwaysAskCommands` list: it requires confirmation on **every** execution and can never be added to the allow-list.
+
+Console reading is arbitrated by a single input pump: `ConsoleInputReader` keeps reading lines, and while a prompt is pending the line is delivered to the asking component instead of being dispatched as a console command. `IInputReader.ReadLineAsync` is the entry point any component uses to ask the operator a question.
 
 ---
 
 ## Notes
 
-- Destructive or long-running commands (`$exec`, `$run`, `$stop`, `$stopall`, `$server run/stop`, ...) require AI confirmation before execution.
+- Destructive or long-running commands (`$exec`, `$server run`, `$server stop`, ...) require AI confirmation before execution. Agent-issued commands are always gated: they run only when allowed by `AgentPermissions.AllowList` or explicitly confirmed, and `$exec` is confirmed every single time.
 - Backing up a running server can produce inconsistent data; stop the server first when possible.
 - The `$file` command is whitelist-restricted to server directories and `%APPDATA%\MSL_CLI`.
 - `server.properties` writes use an atomic temp-file + replace strategy.

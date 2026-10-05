@@ -28,30 +28,32 @@ public class Program
         // ---------- 1. 构建 DI 容器 ----------
         var services = new ServiceCollection();
 
+        // ----- 输出适配器（控制台 + 文件）-----
+        // 先构建输出器，使配置加载时也能把解析错误报告给用户
+        var consoleOutput = new ConsoleOutputWriter();
+        var fileOutput = new FileOutputWriter();
+        var outputWriter = new CompositeOutputWriter(consoleOutput, fileOutput);
+
+        services.AddSingleton<ConsoleOutputWriter>(consoleOutput);
+        services.AddSingleton<FileOutputWriter>(fileOutput);
+        services.AddSingleton<IOutputWriter>(outputWriter);
+
         // ----- 配置加载 -----
-        var configStore = new FileConfigurationStore("MSL_CLI");
+        var configStore = new FileConfigurationStore("MSL_CLI", outputWriter);
         var appConfig = configStore.LoadConfig();
 
         services.AddSingleton<IConfigurationStore>(configStore);
         services.AddSingleton(appConfig);
 
-        // ----- 输出适配器（控制台 + 文件）-----
-        services.AddSingleton<ConsoleOutputWriter>();
-        services.AddSingleton<FileOutputWriter>();
-        services.AddSingleton<IOutputWriter>(sp =>
-        {
-            var console = sp.GetRequiredService<ConsoleOutputWriter>();
-            var file = sp.GetRequiredService<FileOutputWriter>();
-            return new CompositeOutputWriter(console, file);
-        });
-
-        // ----- 输入适配器（使用队列）-----
+        // ----- 输入适配器（使用队列，并支持提问时独占读取一行）-----
         services.AddSingleton<IInputReader, ConsoleInputReader>();
 
         // ----- 基础设施 -----
         services.AddTransient<IServerProcess, ServerProcess>();
         services.AddSingleton<IServerRegistry, ServerRegistry>();
         services.AddSingleton<ICommandParser, CommandParser>();
+        // 代理命令授权网关：执行代理命令前向操作员请求许可
+        services.AddSingleton<IAgentPermissionGateway, AgentPermissionGateway>();
         services.AddSingleton<IAgentService, OpenAiAgentService>();
 
         // ----- 应用服务 -----

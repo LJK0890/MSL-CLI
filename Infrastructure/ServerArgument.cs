@@ -7,155 +7,208 @@ using MSL_CLI.Core.Ports;
 namespace MSL_CLI.Infrastructure;
 
 /// <summary>
-/// 服务器启动参数管理器：解析服务器 run.bat / run.sh 启动脚本中的
-/// Java 路径、JVM 参数、JAR 参数与附加参数，并支持修改后自动持久化回脚本。
+/// 服务器启动参数管理器。
+/// 内建模型为：<c>javaPath</c>(string)、<c>jvmArgs</c>(List)、<c>jarArgs</c>(string)、<c>appendArgs</c>(List)。
+/// JVM 参数写入 <c>user_jvm_args.txt</c>，启动脚本按
+/// <c>{javaPath} @user_jvm_args.txt {jarArgs} {appendArgs}</c> 的形式重建，
+/// 与 Forge / NeoForge 官方启动脚本格式保持一致。
 /// </summary>
 public class ServerArgument
 {
-    /// <summary>
-    /// 服务器名称。
-    /// </summary>
+    /// <summary>服务器名称，用于日志前缀。</summary>
     private readonly string _serverName;
 
-    /// <summary>
-    /// 服务器根目录路径，用于定位启动脚本及参数文件。
-    /// </summary>
+    /// <summary>服务器根目录，用于定位启动脚本与 user_jvm_args.txt。</summary>
     private readonly string _serverPath;
 
-    /// <summary>
-    /// 输出写入器，用于输出解析与保存过程中的提示或错误信息。
-    /// </summary>
+    /// <summary>输出写入器。</summary>
     private readonly IOutputWriter _output;
 
-    /// <summary>
-    /// Java 可执行文件路径，默认 "java"。
-    /// </summary>
+    /// <summary>Java 可执行文件路径，默认 "java"。可读写，不可删除。</summary>
     private string _javaPath = "java";
 
-    /// <summary>
-    /// JVM 启动参数，默认 "-Xms2G -Xmx4G"。
-    /// </summary>
-    private string _jvmArgs = "-Xms2G -Xmx4G";
+    /// <summary>JVM 启动参数（列表）。可读写，可删除单个或全部。</summary>
+    private readonly List<string> _jvmArgs = new();
 
-    /// <summary>
-    /// JAR 启动参数，默认 "-jar server.jar"。
-    /// </summary>
+    /// <summary>JAR / 参数文件参数，例如 "-jar server.jar" 或 "@libraries/.../win_args.txt"。可读写，不可删除。</summary>
     private string _jarArgs = "-jar server.jar";
 
-    /// <summary>
-    /// 附加参数，默认 "nogui"。
-    /// </summary>
-    private string _appendArgs = "nogui";
+    /// <summary>附加参数（列表），例如 "nogui"。可读写，可删除单个或全部。</summary>
+    private readonly List<string> _appendArgs = new();
+
+    /// <summary>JVM 参数文件的固定文件名。</summary>
+    private const string JvmArgsFileName = "user_jvm_args.txt";
+
+    /// <summary>解析失败时的默认 JVM 参数。</summary>
+    private static readonly string[] DefaultJvmArgs = { "-Xms2G", "-Xmx4G" };
+
+    /// <summary>解析失败时的默认附加参数。</summary>
+    private static readonly string[] DefaultAppendArgs = { "nogui" };
 
     /// <summary>
-    /// 初始化服务器启动参数管理器，立即解析现有启动脚本并持久化参数。
+    /// 初始化管理器：立即解析现有启动脚本，并把解析结果按标准格式持久化回去。
     /// </summary>
     /// <param name="serverName">服务器名称。</param>
     /// <param name="serverPath">服务器根目录路径。</param>
-    /// <param name="output">输出写入器，用于记录解析及保存过程中的信息。</param>
+    /// <param name="output">输出写入器。</param>
     public ServerArgument(string serverName, string serverPath, IOutputWriter output)
     {
         _serverName = serverName;
         _serverPath = serverPath;
         _output = output;
         Parse();
-        // 解析后立即持久化，确保 user_jvm_args.txt 存在且脚本指向它
         SaveToScript();
     }
 
+    // ---------- 启动脚本路径 ----------
+
+    /// <summary>当前平台对应的启动脚本完整路径。</summary>
+    private string RunScriptPath =>
+        Path.Combine(_serverPath, RuntimeInformation.IsOSPlatform(OSPlatform.Windows) ? "run.bat" : "run.sh");
+
+    /// <summary>JVM 参数文件的完整路径。</summary>
+    private string JvmArgsFilePath => Path.Combine(_serverPath, JvmArgsFileName);
+
+    // ---------- 解析 ----------
+
     /// <summary>
-    /// 解析启动脚本，提取 Java 路径、JVM 参数、JAR 参数与附加参数。
+    /// 解析启动脚本，填充 javaPath / jvmArgs / jarArgs / appendArgs。
+    /// 解析失败的部分使用默认值，保证对象始终可用。
     /// </summary>
     private void Parse()
     {
-        string runFile = Path.Combine(_serverPath, RuntimeInformation.IsOSPlatform(OSPlatform.Windows) ? "run.bat" : "run.sh");
-        if (!File.Exists(runFile))
+        if (!File.Exists(RunScriptPath))
         {
             _output.Write(_serverName, LogLevel.Warning, "启动脚本不存在，使用默认参数");
+            _jvmArgs.AddRange(DefaultJvmArgs);
+            _appendArgs.AddRange(DefaultAppendArgs);
             return;
         }
 
-        var lines = File.ReadAllLines(runFile, Encoding.UTF8);
-        string? startLine = null;
-        // 逐行查找以引号或 "java" 开头的启动命令行
-        foreach (var line in lines)
-        {
-            var trimmed = line.Trim();
-            if (trimmed.StartsWith("\"") || trimmed.StartsWith("java"))
-            {
-                startLine = trimmed;
-                break;
-            }
-        }
+        // 1. 读取 user_jvm_args.txt 作为 JVM 参数的权威来源
+        var fileJvmArgs = ReadJvmArgsFile();
+
+        // 2. 找到启动命令行
+        var startLine = File.ReadAllLines(RunScriptPath, Encoding.UTF8)
+            .Select(l => l.Trim())
+            .FirstOrDefault(l => l.StartsWith('"') || l.StartsWith("java"));
+
         if (string.IsNullOrEmpty(startLine))
         {
             _output.Write(_serverName, LogLevel.Warning, "未找到启动行，使用默认参数");
+            _jvmArgs.AddRange(fileJvmArgs.Count > 0 ? fileJvmArgs : DefaultJvmArgs);
+            _appendArgs.AddRange(DefaultAppendArgs);
             return;
         }
 
-        // 提取java路径
+        // 3. 提取 java 路径
         var match = Regex.Match(startLine, @"^(\s*)(""[^""]*""|\S+)\s*");
-        if (!match.Success) return;
-        var javaPart = match.Groups[2].Value.Trim('"');
-        _javaPath = javaPart;
-
-        // 剩余参数
-        string rest = startLine.Substring(match.Length);
-        var tokens = Tokenize(rest);
-        tokens = ExpandAtFiles(_serverPath, tokens);
-        // 定位 -jar
-        int jarIndex = -1;
-        for (int i = 0; i < tokens.Count; i++)
+        if (!match.Success)
         {
-            if (tokens[i].Equals("-jar", StringComparison.OrdinalIgnoreCase))
-            {
-                if (i + 1 < tokens.Count)
-                {
-                    _jarArgs = "-jar " + tokens[i + 1];
-                    jarIndex = i;
-                    break;
-                }
-            }
-            else if (tokens[i].StartsWith("-jar=") || tokens[i].StartsWith("@"))
-            {
-                _jarArgs = tokens[i];
-                jarIndex = i;
-                break;
-            }
+            _output.Write(_serverName, LogLevel.Warning, "无法解析 Java 路径，使用默认参数");
+            _jvmArgs.AddRange(fileJvmArgs.Count > 0 ? fileJvmArgs : DefaultJvmArgs);
+            _appendArgs.AddRange(DefaultAppendArgs);
+            return;
         }
-        if (jarIndex == -1)
+        _javaPath = match.Groups[2].Value.Trim('"');
+
+        // 4. 拆分其余 token；@user_jvm_args.txt 交由文件承载，不再重复出现在命令行
+        var rest = startLine.Substring(match.Length);
+        var tokens = Tokenize(rest)
+            .Where(t => !t.Equals("@" + JvmArgsFileName, StringComparison.OrdinalIgnoreCase))
+            .ToList();
+
+        // 5. 定位 jar 参数
+        var jarIndex = FindJarIndex(tokens);
+        if (jarIndex < 0)
         {
             _output.Write(_serverName, LogLevel.Warning, "未找到 -jar 参数，使用默认");
+            _jvmArgs.Clear();
+            _jvmArgs.AddRange(fileJvmArgs.Count > 0 ? fileJvmArgs : DefaultJvmArgs);
+            _appendArgs.Clear();
+            _appendArgs.AddRange(tokens.Count > 0 ? tokens : DefaultAppendArgs);
             return;
         }
 
-        // 提取JVM参数（-jar之前）
-        var jvm = new List<string>();
-        for (int i = 0; i < jarIndex; i++)
+        // 6. jarArgs：-jar x.jar 视为整体，否则是单个 token（如 @.../win_args.txt）
+        var jarTokenCount = 1;
+        if (tokens[jarIndex].Equals("-jar", StringComparison.OrdinalIgnoreCase) && jarIndex + 1 < tokens.Count)
         {
-            if (tokens[i].StartsWith("%")) continue;
-            if (tokens[i].Equals("nogui", StringComparison.OrdinalIgnoreCase))
-            {
-                _appendArgs = "nogui";
-                break;
-            }
-            jvm.Add(tokens[i]);
+            _jarArgs = $"-jar {tokens[jarIndex + 1]}";
+            jarTokenCount = 2;
         }
-        if (jvm.Count > 0)
-            _jvmArgs = string.Join(" ", jvm);
+        else
+        {
+            _jarArgs = tokens[jarIndex];
+        }
+
+        // 7. appendArgs：jar 参数之后的全部 token
+        _appendArgs.Clear();
+        _appendArgs.AddRange(tokens.Skip(jarIndex + jarTokenCount));
+
+        // 8. jvmArgs：命令行中位于 jar 之前的 token，与文件内容合并（命令行优先）
+        _jvmArgs.Clear();
+        _jvmArgs.AddRange(fileJvmArgs);
+        foreach (var token in tokens.Take(jarIndex))
+        {
+            if (token.StartsWith('%')) continue;                 // 跳过 win_args.txt 中的占位符
+            if (!_jvmArgs.Contains(token, StringComparer.Ordinal))
+                _jvmArgs.Add(token);
+        }
+
+        if (_jvmArgs.Count == 0)
+            _jvmArgs.AddRange(DefaultJvmArgs);
     }
 
     /// <summary>
-    /// 将参数字符串按空白字符拆分为 token 列表，支持双引号包裹的空格。
+    /// 读取 user_jvm_args.txt 中的 JVM 参数，按空白拆分并跳过注释行。
+    /// </summary>
+    /// <returns>JVM 参数列表；文件不存在时返回空列表。</returns>
+    private List<string> ReadJvmArgsFile()
+    {
+        var result = new List<string>();
+        if (!File.Exists(JvmArgsFilePath)) return result;
+
+        foreach (var line in File.ReadAllLines(JvmArgsFilePath, Encoding.UTF8))
+        {
+            var trimmed = line.Trim();
+            if (string.IsNullOrEmpty(trimmed) || trimmed.StartsWith('#')) continue;
+            result.AddRange(Tokenize(trimmed));
+        }
+        return result;
+    }
+
+    /// <summary>
+    /// 在 token 列表中定位提供 JAR / 参数文件的那一项。
+    /// </summary>
+    /// <param name="tokens">命令行 token 列表。</param>
+    /// <returns>索引；未找到时返回 -1。</returns>
+    private static int FindJarIndex(List<string> tokens)
+    {
+        for (int i = 0; i < tokens.Count; i++)
+        {
+            if (tokens[i].Equals("-jar", StringComparison.OrdinalIgnoreCase) && i + 1 < tokens.Count)
+                return i;
+            // Forge / NeoForge 的 @.../win_args.txt 承担 -jar 的角色
+            if (tokens[i].EndsWith("win_args.txt", StringComparison.OrdinalIgnoreCase) ||
+                tokens[i].EndsWith("unix_args.txt", StringComparison.OrdinalIgnoreCase))
+                return i;
+        }
+        return -1;
+    }
+
+    /// <summary>
+    /// 将参数字符串按空白拆分为 token，支持双引号包裹的空格。
     /// </summary>
     /// <param name="input">原始参数字符串。</param>
     /// <returns>拆分后的 token 列表。</returns>
-    private List<string> Tokenize(string input)
+    private static List<string> Tokenize(string input)
     {
         var result = new List<string>();
         var current = new StringBuilder();
-        bool inQuotes = false;
-        foreach (char c in input)
+        var inQuotes = false;
+
+        foreach (var c in input)
         {
             // 双引号用于切换引号状态，本身不进入 token
             if (c == '"') { inQuotes = !inQuotes; continue; }
@@ -167,145 +220,249 @@ public class ServerArgument
             }
             current.Append(c);
         }
+
         if (current.Length > 0) result.Add(current.ToString());
         return result;
     }
 
-    /// <summary>
-    /// 展开 @ 引用的参数文件（如 @libraries/...），将其内容按行并入参数列表；
-    /// 但 win_args.txt / unix_args.txt 这类脚本参数文件本身不展开。
-    /// </summary>
-    /// <param name="basePath">参数文件所在的基础目录（服务器根目录）。</param>
-    /// <param name="tokens">待展开的 token 列表。</param>
-    /// <returns>展开后的 token 列表；文件不存在时保留原 token。</returns>
-    private List<string> ExpandAtFiles(string basePath, List<string> tokens)
-    {
-        var expanded = new List<string>();
-        foreach (var token in tokens)
-        {
-            if (token.StartsWith("@") && !token.EndsWith("win_args.txt", StringComparison.OrdinalIgnoreCase)
-                                      && !token.EndsWith("unix_args.txt", StringComparison.OrdinalIgnoreCase))
-            {
-                string atFile = Path.Combine(basePath, token.Substring(1));
-                if (File.Exists(atFile))
-                {
-                    var content = File.ReadAllText(atFile, Encoding.UTF8);
-                    // 按行读取并跳过以 # 开头的注释行
-                    var lines = content.Split(new[] { '\n', '\r' }, StringSplitOptions.RemoveEmptyEntries)
-                                       .Where(l => !l.Trim().StartsWith("#"));
-                    foreach (var line in lines)
-                        expanded.AddRange(Tokenize(line));
-                }
-                else
-                    expanded.Add(token);
-            }
-            else
-                expanded.Add(token);
-        }
-        return expanded;
-    }
+    // ---------- 读取 ----------
 
-    // ---------- Getter ----------
-    /// <summary>
-    /// 获取完整的启动命令行参数（含 Java 路径、JVM 参数、JAR 参数与附加参数）。
-    /// </summary>
-    /// <returns>拼接并去除首尾空白的完整启动参数字符串。</returns>
-    public string GetStartArguments() => $"{_javaPath} {_jvmArgs} {_jarArgs} {_appendArgs}".Trim();
+    /// <summary>Java 可执行文件路径。</summary>
+    public string JavaPath => _javaPath;
 
-    /// <summary>
-    /// 获取 Java 可执行文件路径。
-    /// </summary>
-    /// <returns>Java 路径。</returns>
-    public string GetJavaPath() => _javaPath;
+    /// <summary>JAR / 参数文件参数，例如 "-jar server.jar" 或 "@libraries/.../win_args.txt"。</summary>
+    public string JarArgs => _jarArgs;
 
-    /// <summary>
-    /// 获取 JVM 启动参数。
-    /// </summary>
+    /// <summary>JVM 启动参数的只读视图。</summary>
+    public IReadOnlyList<string> JvmArgs => _jvmArgs;
+
+    /// <summary>附加参数的只读视图。</summary>
+    public IReadOnlyList<string> AppendArgs => _appendArgs;
+
+    /// <summary>把 JVM 参数以单行空格分隔的形式返回（与 user_jvm_args.txt 内容一致）。</summary>
     /// <returns>JVM 参数字符串。</returns>
-    public string GetJvmArgs() => _jvmArgs;
+    public string GetJvmArgs() => string.Join(" ", _jvmArgs);
 
-    /// <summary>
-    /// 获取 JAR 启动参数。
-    /// </summary>
-    /// <returns>JAR 参数字符串。</returns>
-    public string GetJarArgs() => _jarArgs;
-
-    /// <summary>
-    /// 获取附加参数（如 nogui）。
-    /// </summary>
+    /// <summary>把附加参数以单行空格分隔的形式返回。</summary>
     /// <returns>附加参数字符串。</returns>
-    public string GetAppendArgs() => _appendArgs;
+    public string GetAppendArgs() => string.Join(" ", _appendArgs);
+
+    /// <summary>获取除 Java 路径外的全部启动参数（JVM、JAR 与附加参数）。</summary>
+    /// <returns>传给进程的参数串。</returns>
+    public string GetJavaArgs() => $"{GetJvmArgs()} {_jarArgs} {GetAppendArgs()}".Trim();
+
+    /// <summary>获取完整的启动命令行（含 Java 路径）。</summary>
+    /// <returns>完整启动参数字符串。</returns>
+    public string GetStartArguments() => $"{_javaPath} {GetJavaArgs()}".Trim();
+
+    // ---------- 写入（自动持久化） ----------
 
     /// <summary>
-    /// 获取除 Java 路径外的全部启动参数（JVM、JAR 与附加参数）。
-    /// </summary>
-    /// <returns>拼接并去除首尾空白的参数字符串。</returns>
-    public string GetJavaArgs() => $"{_jvmArgs} {_jarArgs} {_appendArgs}".Trim();
-
-    // ---------- Setter（自动持久化） ----------
-    /// <summary>
-    /// 设置 Java 可执行文件路径并立即持久化到启动脚本。
+    /// 设置 Java 可执行文件路径并持久化。路径为空时抛出异常（javaPath 不可删除）。
     /// </summary>
     /// <param name="value">新的 Java 路径。</param>
     public void SetJavaPath(string value)
     {
-        _javaPath = value;
+        if (string.IsNullOrWhiteSpace(value))
+            throw new ArgumentException("javaPath 不能为空（不可删除），如需更换请使用 set 指定具体路径");
+
+        _javaPath = value.Trim();
         SaveToScript();
     }
 
     /// <summary>
-    /// 设置 JVM 启动参数并立即持久化到 user_jvm_args.txt。
+    /// 设置 JAR / 参数文件参数并持久化，值按 token 原样保存
+    /// （"server.jar"、"@libraries/.../win_args.txt"、"-jar server.jar" 均可）；
+    /// 为空时抛出异常（jarArgs 不可删除）。
     /// </summary>
-    /// <param name="value">新的 JVM 参数。</param>
-    public void SetJvmArgs(string value)
-    {
-        _jvmArgs = value;
-        SaveToScript();
-    }
-
-    /// <summary>
-    /// 设置 JAR 启动参数并立即持久化到启动脚本。
-    /// </summary>
-    /// <param name="value">新的 JAR 参数。</param>
+    /// <param name="value">新的 jar 参数。</param>
     public void SetJarArgs(string value)
     {
-        _jarArgs = value;
+        if (string.IsNullOrWhiteSpace(value))
+            throw new ArgumentException("jarArgs 不能为空（不可删除），如需更换请使用 set 指定具体值");
+
+        _jarArgs = value.Trim();
         SaveToScript();
     }
 
     /// <summary>
-    /// 设置附加参数并立即持久化到启动脚本。
+    /// 整体替换 JVM 参数列表并持久化（传空列表表示清空）。
     /// </summary>
-    /// <param name="value">新的附加参数。</param>
-    public void SetAppendArgs(string value)
+    /// <param name="values">新的 JVM 参数集合。</param>
+    public void SetJvmArgs(IEnumerable<string> values)
     {
-        _appendArgs = value;
+        _jvmArgs.Clear();
+        _jvmArgs.AddRange(values.Where(v => !string.IsNullOrWhiteSpace(v)).Select(v => v.Trim()));
         SaveToScript();
+    }
+
+    /// <summary>
+    /// 整体替换附加参数列表并持久化（传空列表表示清空）。
+    /// </summary>
+    /// <param name="values">新的附加参数集合。</param>
+    public void SetAppendArgs(IEnumerable<string> values)
+    {
+        _appendArgs.Clear();
+        _appendArgs.AddRange(values.Where(v => !string.IsNullOrWhiteSpace(v)).Select(v => v.Trim()));
+        SaveToScript();
+    }
+
+    /// <summary>
+    /// 按索引替换 JVM 参数中的某一项并持久化。
+    /// </summary>
+    /// <param name="index">从 0 开始的位置。</param>
+    /// <param name="value">新的参数值。</param>
+    /// <returns>替换成功返回 true；索引越界返回 false。</returns>
+    public bool SetJvmArgAt(int index, string value)
+    {
+        if (index < 0 || index >= _jvmArgs.Count) return false;
+        _jvmArgs[index] = value;
+        SaveToScript();
+        return true;
+    }
+
+    /// <summary>
+    /// 按索引替换附加参数中的某一项并持久化。
+    /// </summary>
+    /// <param name="index">从 0 开始的位置。</param>
+    /// <param name="value">新的参数值。</param>
+    /// <returns>替换成功返回 true；索引越界返回 false。</returns>
+    public bool SetAppendArgAt(int index, string value)
+    {
+        if (index < 0 || index >= _appendArgs.Count) return false;
+        _appendArgs[index] = value;
+        SaveToScript();
+        return true;
+    }
+
+    /// <summary>
+    /// 追加一个 JVM 参数并持久化；参数已存在时不重复添加。
+    /// </summary>
+    /// <param name="value">要追加的参数。</param>
+    /// <returns>实际添加成功返回 true。</returns>
+    public bool AddJvmArg(string value)
+    {
+        if (string.IsNullOrWhiteSpace(value)) return false;
+        var trimmed = value.Trim();
+        if (_jvmArgs.Contains(trimmed, StringComparer.Ordinal)) return false;
+
+        _jvmArgs.Add(trimmed);
+        SaveToScript();
+        return true;
+    }
+
+    /// <summary>
+    /// 追加一个附加参数并持久化；参数已存在时不重复添加。
+    /// </summary>
+    /// <param name="value">要追加的参数。</param>
+    /// <returns>实际添加成功返回 true。</returns>
+    public bool AddAppendArg(string value)
+    {
+        if (string.IsNullOrWhiteSpace(value)) return false;
+        var trimmed = value.Trim();
+        if (_appendArgs.Contains(trimmed, StringComparer.Ordinal)) return false;
+
+        _appendArgs.Add(trimmed);
+        SaveToScript();
+        return true;
+    }
+
+    // ---------- 删除 ----------
+
+    /// <summary>
+    /// 按索引删除一个 JVM 参数并持久化。
+    /// </summary>
+    /// <param name="index">从 0 开始的位置。</param>
+    /// <returns>删除成功返回 true；索引越界返回 false。</returns>
+    public bool RemoveJvmArgAt(int index)
+    {
+        if (index < 0 || index >= _jvmArgs.Count) return false;
+        _jvmArgs.RemoveAt(index);
+        SaveToScript();
+        return true;
+    }
+
+    /// <summary>
+    /// 按索引删除一个附加参数并持久化。
+    /// </summary>
+    /// <param name="index">从 0 开始的位置。</param>
+    /// <returns>删除成功返回 true；索引越界返回 false。</returns>
+    public bool RemoveAppendArgAt(int index)
+    {
+        if (index < 0 || index >= _appendArgs.Count) return false;
+        _appendArgs.RemoveAt(index);
+        SaveToScript();
+        return true;
+    }
+
+    /// <summary>
+    /// 按值删除一个 JVM 参数并持久化。
+    /// </summary>
+    /// <param name="value">要删除的参数值。</param>
+    /// <returns>删除成功返回 true；未找到返回 false。</returns>
+    public bool RemoveJvmArg(string value)
+    {
+        var index = _jvmArgs.FindIndex(a => string.Equals(a, value, StringComparison.Ordinal));
+        if (index < 0) return false;
+
+        _jvmArgs.RemoveAt(index);
+        SaveToScript();
+        return true;
+    }
+
+    /// <summary>
+    /// 按值删除一个附加参数并持久化。
+    /// </summary>
+    /// <param name="value">要删除的参数值。</param>
+    /// <returns>删除成功返回 true；未找到返回 false。</returns>
+    public bool RemoveAppendArg(string value)
+    {
+        var index = _appendArgs.FindIndex(a => string.Equals(a, value, StringComparison.Ordinal));
+        if (index < 0) return false;
+
+        _appendArgs.RemoveAt(index);
+        SaveToScript();
+        return true;
     }
 
     // ---------- 持久化 ----------
+
     /// <summary>
-    /// 将当前参数持久化到服务器的启动脚本（run.bat / run.sh）与 user_jvm_args.txt。
+    /// 将当前参数持久化到启动脚本（run.bat / run.sh）与 user_jvm_args.txt。
+    /// 命令行格式固定为 <c>{javaPath} @user_jvm_args.txt {jarArgs} {appendArgs}</c>。
     /// </summary>
     private void SaveToScript()
     {
         try
         {
-            // 1. 写入 run.bat / run.sh
-            string runFile = Path.Combine(_serverPath, RuntimeInformation.IsOSPlatform(OSPlatform.Windows) ? "run.bat" : "run.sh");
-            // 构建新脚本内容：<javapath> @user_jvm_args.txt <jarargs> <append>
-            string scriptContent = $"{_javaPath} @user_jvm_args.txt {_jarArgs} {_appendArgs}";
-            File.WriteAllText(runFile, scriptContent, Encoding.UTF8);
+            var jvmContent = GetJvmArgs();
+            var scriptContent = $"{_javaPath} @{JvmArgsFileName} {_jarArgs} {GetAppendArgs()}".Trim();
 
-            // 2. 写入 user_jvm_args.txt（仅 JVM 参数）
-            string jvmArgsFile = Path.Combine(_serverPath, "user_jvm_args.txt");
-            File.WriteAllText(jvmArgsFile, _jvmArgs, Encoding.UTF8);
+            // 内容未变化时不写盘，避免无谓地刷新文件时间戳
+            var changed = WriteIfChanged(JvmArgsFilePath, jvmContent);
+            changed |= WriteIfChanged(RunScriptPath, scriptContent);
 
-            _output.Write(_serverName, LogLevel.Success, $"启动脚本和 user_jvm_args.txt 已更新");
+            if (changed)
+                _output.Write(_serverName, LogLevel.Success, "启动脚本和 user_jvm_args.txt 已更新");
         }
         catch (Exception ex)
         {
             _output.Write(_serverName, LogLevel.Error, $"保存启动脚本失败: {ex.Message}");
         }
+    }
+
+    /// <summary>
+    /// 仅当文件内容与目标不一致时写入。
+    /// </summary>
+    /// <param name="path">目标文件路径。</param>
+    /// <param name="content">期望内容。</param>
+    /// <returns>实际发生了写入时返回 true。</returns>
+    private static bool WriteIfChanged(string path, string content)
+    {
+        if (File.Exists(path) && File.ReadAllText(path, Encoding.UTF8) == content)
+            return false;
+
+        File.WriteAllText(path, content, Encoding.UTF8);
+        return true;
     }
 }

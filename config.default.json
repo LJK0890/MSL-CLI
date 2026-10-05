@@ -1,0 +1,12 @@
+{
+  "EnableAI": true,
+  "AIConfigs": {},
+  "ServerPaths": {},
+  "DefaultAIConfig": "",
+  "AgentPermissions": {
+    "AllowList": [],
+    "AlwaysAskCommands": [
+      "$exec"
+    ]
+  }
+}

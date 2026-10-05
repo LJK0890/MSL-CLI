@@ -5,30 +5,38 @@ using MSL_CLI.Core.Ports;
 namespace MSL_CLI.Infrastructure.Commands;
 
 /// <summary>
-/// 备份服务器世界文件的命令（$backup）。
+/// $server bp 动作的实现：把服务器世界目录打包为 zip 备份到 backups 目录。
+/// 通过 <see cref="Make"/> 接收动作之后的参数文本。
 /// </summary>
-public class BackupCommand : ICommand
+internal static class ServerBackupCommand
 {
     /// <summary>
-    /// 命令名称：$backup。
+    /// 处理 bp 动作：解析服务器名与备注并执行备份。
     /// </summary>
-    public string Name => "$backup";
-    /// <summary>
-    /// 命令描述：备份指定服务器的世界文件到 backups 目录。
-    /// </summary>
-    public string Description => "备份指定服务器的世界文件到 backups 目录，用法: $backup <服务器名> [备注]";
+    /// <param name="rest">bp 之后的参数文本，形如 "yz 备注"。</param>
+    /// <param name="args">命令参数，包含服务器注册表。</param>
+    /// <param name="output">输出写入器，可为 null。</param>
+    /// <returns>命令执行结果。</returns>
+    public static Task<CommandResult> Make(string rest, CommandArgs args, IOutputWriter? output)
+    {
+        var forwarded = new CommandArgs(rest, args.ServerRegistry, args.AgentService, args.ConfigStore)
+        {
+            Parser = args.Parser
+        };
+        return ExecuteAsync(forwarded, output);
+    }
 
     /// <summary>
-    /// 执行 $backup 命令，将服务器的世界目录打包为 zip 备份到 backups 目录。
+    /// 执行备份：将服务器的世界目录打包为 zip 备份到 backups 目录。
     /// </summary>
     /// <param name="args">命令参数，包含原始输入及运行环境依赖。</param>
     /// <param name="output">输出写入器，可为 null。</param>
     /// <returns>命令执行结果。</returns>
-    public async Task<CommandResult> ExecuteAsync(CommandArgs args, IOutputWriter? output = null)
+    private static async Task<CommandResult> ExecuteAsync(CommandArgs args, IOutputWriter? output = null)
     {
         if (string.IsNullOrWhiteSpace(args.Raw))
         {
-            var msg = "用法: $backup <服务器名> [备注]";
+            var msg = "用法: $server bp <服务器名> [备注]";
             output?.Write("Command", LogLevel.Error, msg);
             return new CommandResult(0, msg);
         }
@@ -42,14 +50,12 @@ public class BackupCommand : ICommand
         {
             var msg = $"未找到服务器 '{serverName}'";
             output?.Write("Command", LogLevel.Error, msg);
-            return new CommandResult(0, msg); 
+            return new CommandResult(0, msg);
         }
 
         // 服务器运行中备份可能不一致，仅提示警告但不中断
         if (server.Status == ServerStatus.Running)
-        {
             output?.Write("Command", LogLevel.Warning, "服务器正在运行，备份可能不一致，建议先停止。继续执行备份...");
-        }
 
         string serverPath = server.Path;
         // 获取 level-name

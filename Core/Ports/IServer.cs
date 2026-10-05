@@ -48,17 +48,6 @@ public interface IServer
     /// <returns>查询得到的键值对信息；查询失败时返回 null。</returns>
     Task<Dictionary<string, string>?> GetQueryInfoAsync();
     /// <summary>
-    /// 获取服务器 ops.json 中的管理员玩家列表。
-    /// </summary>
-    /// <returns>管理员玩家名称列表。</returns>
-    List<string> GetOps();
-    /// <summary>
-    /// 判断指定玩家是否为服务器管理员（op）。
-    /// </summary>
-    /// <param name="player">玩家名称。</param>
-    /// <returns>该玩家是否为管理员。</returns>
-    bool IsOp(string player);
-    /// <summary>
     /// 获取输出缓冲区内容，但不清空缓冲区。
     /// </summary>
     /// <returns>缓冲区的完整文本内容。</returns>
