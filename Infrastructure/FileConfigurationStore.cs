@@ -33,6 +33,22 @@ public class FileConfigurationStore : IConfigurationStore
     public string? LastLoadError { get; private set; }
 
     /// <summary>
+    /// 用户配置文件的完整路径（%APPDATA%\{appName}\config.json）。
+    /// 用于在启动时明确告知操作员本次运行实际读写的是哪一份配置。
+    /// </summary>
+    public string UserConfigPath => _userConfigPath;
+
+    /// <summary>
+    /// 默认配置模板的完整路径（程序运行目录下的 config.default.json）。
+    /// </summary>
+    public string DefaultConfigPath => _defaultConfigPath;
+
+    /// <summary>
+    /// 最近一次 LoadConfig 的实际数据来源。
+    /// </summary>
+    public string LastLoadSource { get; private set; } = "（尚未加载）";
+
+    /// <summary>
     /// 初始化配置存储，创建用户配置目录并计算用户/默认配置文件路径。
     /// </summary>
     /// <param name="appName">应用名称，用于在 %APPDATA% 下定位配置目录。</param>
@@ -73,6 +89,18 @@ public class FileConfigurationStore : IConfigurationStore
     /// <returns>加载到的应用配置；其结果始终已被规范化。</returns>
     public AppConfig LoadConfig()
     {
+        // 每次从磁盘读取，保证外部编辑能被立即看到（$app reload / $app cfg get 都依赖这一点）。
+        // 注意：不要在这里做实例缓存——多个 AppConfig 副本并存时，退出时的整份保存
+        // 会用陈旧副本覆盖掉会话中新增的内容。
+        return ReadFromDisk();
+    }
+
+    /// <summary>
+    /// 从磁盘读取配置（用户配置 → 默认模板 → 内置默认值），并完成规范化。
+    /// </summary>
+    /// <returns>读取到的配置对象。</returns>
+    private AppConfig ReadFromDisk()
+    {
         LastLoadError = null;
         AppConfig? config = null;
 
@@ -87,6 +115,8 @@ public class FileConfigurationStore : IConfigurationStore
                 // 反序列化返回 null 说明文件内容为字面量 null，按损坏处理
                 if (config == null)
                     RecordLoadError("用户配置文件内容为 null", new JsonException("配置根对象为 null"));
+                else
+                    LastLoadSource = _userConfigPath;
             }
             catch (JsonException ex)
             {
@@ -107,7 +137,10 @@ public class FileConfigurationStore : IConfigurationStore
                 var json = File.ReadAllText(_defaultConfigPath);
                 config = JsonSerializer.Deserialize<AppConfig>(json, ReadOptions);
                 if (config != null)
+                {
+                    LastLoadSource = _defaultConfigPath + "（默认模板回退）";
                     _output?.Write("Config", LogLevel.Warning, $"已回退到默认配置文件: {_defaultConfigPath}");
+                }
             }
             catch (Exception ex)
             {
@@ -116,7 +149,11 @@ public class FileConfigurationStore : IConfigurationStore
         }
 
         // 3. 仍无配置时使用程序内置的默认配置
-        config ??= new AppConfig();
+        if (config == null)
+        {
+            LastLoadSource = "程序内置默认值";
+            config = new AppConfig();
+        }
 
         // 4. 规范化：补齐 null 集合与 null 配置项，避免后续访问抛 NullReferenceException
         Normalize(config);

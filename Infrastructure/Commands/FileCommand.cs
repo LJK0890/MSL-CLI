@@ -7,7 +7,7 @@ namespace MSL_CLI.Infrastructure.Commands;
 /// <summary>
 /// 文件操作命令（$file），仅允许在白名单目录内执行读写操作。
 /// </summary>
-public class FileCommand : ICommand
+public class FileCommand : ICommand, IArgValidatingCommand
 {
     /// <summary>
     /// 命令名称：$file。
@@ -17,6 +17,57 @@ public class FileCommand : ICommand
     /// 命令描述：文件操作（仅限白名单目录）。
     /// </summary>
     public string Description => "文件操作（仅限白名单目录），子命令: read, write, list, delete。支持占位符：%appdata%, %<服务器名>%";
+
+    /// <summary>允许的子命令。</summary>
+    private static readonly string[] SubCommands = { "read", "write", "list", "delete" };
+
+    /// <summary>
+    /// 参数校验钩子：检查子命令是否有效、是否给了路径。
+    /// </summary>
+    /// <param name="rawArgs">$file 之后的参数文本。</param>
+    /// <param name="args">命令参数上下文（本命令校验不需要，可为 null）。</param>
+    /// <param name="error">不合法时的说明文本。</param>
+    /// <returns>参数合法时返回 true。</returns>
+    public bool TryValidateArgs(string rawArgs, CommandArgs? args, out string error)
+    {
+        error = string.Empty;
+
+        var parts = rawArgs.Split(' ', StringSplitOptions.RemoveEmptyEntries);
+        if (parts.Length == 0)
+        {
+            error = $"$file 缺少子命令，可用: {string.Join("、", SubCommands)}";
+            return false;
+        }
+
+        if (!SubCommands.Contains(parts[0], StringComparer.OrdinalIgnoreCase))
+        {
+            error = $"$file 未知子命令 '{parts[0]}'，可用: {string.Join("、", SubCommands)}。";
+            return false;
+        }
+
+        if (parts.Length < 2)
+        {
+            error = "用法: $file read|write|list|delete <路径> [内容]";
+            return false;
+        }
+
+        return true;
+    }
+
+    /// <summary>
+    /// 取出授权范围：命令 + 子命令（如 <c>$file write</c>）。
+    /// </summary>
+    /// <param name="rawArgs">$file 之后的参数文本。</param>
+    /// <param name="args">命令参数上下文（本命令判定不需要，可为 null）。</param>
+    /// <returns>授权范围。</returns>
+    public string GetPermissionScope(string rawArgs, CommandArgs? args)
+    {
+        var parts = rawArgs.Split(' ', StringSplitOptions.RemoveEmptyEntries);
+        if (parts.Length == 0) return Name;
+
+        var sub = parts[0].ToLowerInvariant();
+        return SubCommands.Contains(sub, StringComparer.OrdinalIgnoreCase) ? $"{Name} {sub}" : Name;
+    }
 
     /// <summary>
     /// 初始化锁，保证白名单目录列表只初始化一次。

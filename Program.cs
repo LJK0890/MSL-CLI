@@ -50,7 +50,13 @@ public class Program
 
         // ----- 基础设施 -----
         services.AddTransient<IServerProcess, ServerProcess>();
-        services.AddSingleton<IServerRegistry, ServerRegistry>();
+        // 注意：IAgentService 用惰性工厂传给注册表，避免
+        // ICommandExecutor → IServerRegistry → IAgentService → IServerRegistry 的构造循环
+        services.AddSingleton<IServerRegistry>(sp => new ServerRegistry(
+            appConfig,
+            outputWriter,
+            sp,
+            () => sp.GetRequiredService<IAgentService>()));
         services.AddSingleton<ICommandParser, CommandParser>();
         // 代理命令授权网关：执行代理命令前向操作员请求许可
         services.AddSingleton<IAgentPermissionGateway, AgentPermissionGateway>();
@@ -69,7 +75,13 @@ public class Program
         var executor = sp.GetRequiredService<ICommandExecutor>();
         var registry = sp.GetRequiredService<IServerRegistry>();
 
-        // ---------- 4. 打印 ApiKey 加载状态（只在此处输出一次）----------
+        // ---------- 4. 打印配置来源与 ApiKey 加载状态（只在此处输出一次）----------
+        // 明确告知本次运行实际读写的是哪一份配置，便于排查“改了没生效”一类问题
+        output.Write("Config", LogLevel.Info, $"配置文件: {configStore.UserConfigPath}");
+        output.Write("Config", LogLevel.Info, $"本次配置来源: {configStore.LastLoadSource}");
+        output.Write("Config", LogLevel.Info,
+            $"允许列表共 {appConfig.AgentPermissions.AllowList.Count} 条");
+
         foreach (var kv in appConfig.AIConfigs)
         {
             if (kv.Value.UseApiKeyEnv && !string.IsNullOrEmpty(kv.Value.ApiKeyEnv))
@@ -139,7 +151,10 @@ public class Program
         inputReader.StopReading();
         await registry.StopAllAsync();
 
-        configStore.SaveConfig(appConfig);
+        // 注意：这里不再整份保存 appConfig。
+        // 启动时加载的 appConfig 与会话中命令/授权网关读到的磁盘内容可能已经不同，
+        // 退出时用这份陈旧副本写回会清掉会话中新增的内容（例如 AgentPermissions.AllowList）。
+        // 配置的写入一律由修改方即时落盘（$app cfg set、授权“总是允许”、$app reload 等）。
 
         output.Write("GLOBAL", LogLevel.Info, "程序退出");
 

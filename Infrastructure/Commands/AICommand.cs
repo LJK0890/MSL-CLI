@@ -6,7 +6,7 @@ namespace MSL_CLI.Infrastructure.Commands;
 /// <summary>
 /// $ai 命令实现，提供 AI 对话（chat）、AI 代理执行（agent）以及默认 AI 配置管理（default）三个子命令。
 /// </summary>
-public class AICommand : ICommand
+public class AICommand : ICommand, IArgValidatingCommand
 {
     /// <summary>
     /// 命令名称 "$ai"。
@@ -17,6 +17,60 @@ public class AICommand : ICommand
     /// 命令用途说明，用于帮助信息展示。
     /// </summary>
     public string Description => "AI命令，用法: $ai chat|agent [配置名] <消息/指令> | $ai default [配置名]";
+
+    /// <summary>
+    /// 参数校验钩子：检查子命令是否为 chat / agent / default，且内容非空。
+    /// </summary>
+    /// <param name="rawArgs">$ai 之后的参数文本。</param>
+    /// <param name="args">命令参数上下文（本命令校验不需要，可为 null）。</param>
+    /// <param name="error">不合法时的说明文本。</param>
+    /// <returns>参数合法时返回 true。</returns>
+    public bool TryValidateArgs(string rawArgs, CommandArgs? args, out string error)
+    {
+        error = string.Empty;
+
+        var parts = rawArgs.Split(' ', 2, StringSplitOptions.RemoveEmptyEntries);
+        if (parts.Length == 0)
+        {
+            error = "$ai 缺少子命令，可用: chat、agent、default";
+            return false;
+        }
+
+        var sub = parts[0].ToLowerInvariant();
+        if (sub is not ("chat" or "agent" or "default"))
+        {
+            error = $"$ai 未知子命令 '{parts[0]}'，可用: chat、agent、default。";
+            return false;
+        }
+
+        // default 允许不带参数（查看当前默认配置）
+        if (sub == "default") return true;
+
+        if (parts.Length < 2 || string.IsNullOrWhiteSpace(parts[1]))
+        {
+            error = sub == "chat"
+                ? "用法: $ai chat [配置名] <消息>"
+                : "用法: $ai agent [配置名] <指令>";
+            return false;
+        }
+
+        return true;
+    }
+
+    /// <summary>
+    /// 取出授权范围：命令 + 子命令（如 <c>$ai agent</c>）。
+    /// </summary>
+    /// <param name="rawArgs">$ai 之后的参数文本。</param>
+    /// <param name="args">命令参数上下文（本命令判定不需要，可为 null）。</param>
+    /// <returns>授权范围。</returns>
+    public string GetPermissionScope(string rawArgs, CommandArgs? args)
+    {
+        var parts = rawArgs.Split(' ', 2, StringSplitOptions.RemoveEmptyEntries);
+        if (parts.Length == 0) return Name;
+
+        var sub = parts[0].ToLowerInvariant();
+        return sub is "chat" or "agent" or "default" ? $"{Name} {sub}" : Name;
+    }
 
     /// <summary>
     /// 执行 $ai 命令：根据子命令分发到 AI 对话、AI 代理或默认配置管理逻辑。

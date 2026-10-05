@@ -232,7 +232,69 @@ The launch script is rebuilt as `{javaPath} @user_jvm_args.txt {jarArgs} {append
 > The `$chat` / `$agent` shorthand aliases are gone too — use `$ai chat [config] <message>` and `$ai agent [config] <instruction>`.
 
 
-Additionally, if server console output contains text of the form `@ai <config> chat|agent <content>`, it is recognized as an AI trigger (allowing in-game players to trigger AI replies). That recognition path is currently disabled (the relevant call in `ServerManager` is commented out, and its follow-up handler throws `NotImplementedException`).
+### In-game AI trigger
+
+A player can trigger the AI by sending any of these chat forms:
+
+```
+$chat [config] <message>            reply in chat mode
+$agent [config] <instruction>       run in agent mode (may call tools)
+@ai <config> chat|agent <content>   explicitly pick config and mode
+```
+
+When the config name is omitted, `DefaultAIConfig` is used. The reply is sent back to the requesting player via `tellraw` and also printed to the console.
+
+Recognition is based on the Minecraft server chat line format:
+
+```
+[21:08:29] [Server thread/INFO] [net.minecraft.server.MinecraftServer/]: <Sparky_0890> 点任务啊
+```
+
+The `<player> message` part is anchored at the end of the line, so log prefixes such as `[21:08:29]` and `[Server thread/INFO]` are never mistaken for angle-bracket content. **A chat body containing more than one angle-bracket pair is not forwarded to the AI** — the player chat is still recognized, it simply does not trigger an AI command, so e.g. `<a> <b>` is treated as plain chat.
+
+### Authorization routing for player requests
+
+Before running a command the agent asks the permission gateway, which routes the prompt based on where the request came from:
+
+| Request origin | Behaviour |
+| --- | --- |
+| Local console | Prompts on the console and waits for the operator to type y / a / n |
+| In-game player, **not an operator** | **Refused immediately**, no prompt at all |
+| In-game player, **operator** | Sends the prompt in-game with `tellraw` and waits for that player to answer y / a / n in chat |
+
+Operator status is read from `ops.json` in that server's directory (the same source `$server ck op` uses); if the file is missing or unreadable the player is treated as a non-operator (fail closed).
+
+**Validate the command and its arguments before asking for authorization**: when the agent calls `request_permission` or `execute_command`, the command name is first checked against the registered commands, then the command's own argument hook (`IArgValidatingCommand`) checks the subcommand/action. A failure is refused outright — **no prompt, no execution, and nothing written to the allow-list**.
+
+```
+命令 '$check' 不存在，未申请授权也未执行。可用命令: $ai $app $exec $file $help $hl $list $server
+$server cfg 未知子动作 'bogus'，可用: get、getall、set、rm、remove。可先用 $help $server 查看用法。
+```
+
+This avoids spending an approval on something that cannot run, and stops invalid commands (such as a pre-refactor `$check`) from accumulating in `AgentPermissions.AllowList`. The hook is currently implemented by `$server`, `$app`, `$ai`, `$file` and `$help`.
+
+**Order matters**: the operator check runs *before* the allow-list lookup. So once a player is de-opped, even a command already in `AllowList` is refused — a historic allow-list entry cannot keep granting authority.
+
+**The allow-list matches "command + sub-action", not arguments**: commands are normalized (trimmed, runs of internal whitespace collapsed) and the **verb level** becomes the authorization scope, case-insensitively.
+
+| Call | Scope |
+| --- | --- |
+| `$server ck op yz Alice` | `$server ck op` |
+| `$server cfg get yz` / `$server cfg set yz k v` | `$server cfg get` / `$server cfg set` |
+| `$server buf read yz` | `$server buf read` |
+| `$server ls` / `$server run yz` / `$server stop all` | `$server ls` / `$server run` / `$server stop` |
+| `$app cfg set X Y` | `$app cfg set` |
+| `$exec whoami` | `$exec` (read-only commands stop at the command level) |
+
+Approving `$server ck op` therefore covers only `$server ck op`: a different server or player no longer prompts, while `$server ck wl`, `$server ck bip` and `$server cfg get` each still need their own approval. That scope string is what gets written to the allow-list, and session passes are keyed the same way.
+
+A broader entry covers narrower ones: writing `$server ck` by hand covers `op`/`wl`/`bp`/`bip`, and `$server` covers every action of that command. For backward compatibility, entries containing `*` match as a whole-string prefix, and entries containing a space (e.g. `$server cfg get`) match when the current call starts with them.
+
+> Security note: the scope stops at the verb. To keep one action confirmed every time, add its scope string to `AgentPermissions.AlwaysAskCommands` (which contains only `$exec` by default).
+
+A player answer must correspond to the outstanding prompt: only the player who was asked, on that server, can answer with `y`/`yes`, `a`/`always` or `n`/`no`; any other chat text is not consumed as an answer. A player can have only one pending prompt at a time — a second request is refused outright. Waiting longer than 120 seconds counts as a refusal. `$exec` still requires confirmation every single time, and an operator choosing `a` never writes it to the allow-list.
+
+In agent mode the player message is prefixed with `[来自服务器 'X' 的玩家 'Y']` so the agent can run `$server ck op <server> <player>` to check whether the sender is an operator.
 
 ---
 

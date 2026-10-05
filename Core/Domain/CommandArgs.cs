@@ -18,7 +18,7 @@ public class CommandArgs
     /// <summary>
     /// AI 代理服务，用于处理 AI 相关命令。
     /// </summary>
-    public IAgentService AgentService { get; }
+    public IAgentService? AgentService { get; }
     /// <summary>
     /// 配置存储服务，用于读写应用配置。
     /// </summary>
@@ -33,9 +33,9 @@ public class CommandArgs
     /// </summary>
     /// <param name="raw">命令的原始文本。</param>
     /// <param name="registry">服务器注册表服务。</param>
-    /// <param name="agent">AI 代理服务。</param>
+    /// <param name="agent">AI 代理服务；仅做参数校验/范围判定时可为 null。</param>
     /// <param name="config">配置存储服务。</param>
-    public CommandArgs(string raw, IServerRegistry registry, IAgentService agent, IConfigurationStore config)
+    public CommandArgs(string raw, IServerRegistry registry, IAgentService? agent, IConfigurationStore config)
     {
         Raw = raw;
         ServerRegistry = registry;

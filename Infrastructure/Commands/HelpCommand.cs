@@ -8,13 +8,48 @@ namespace MSL_CLI.Infrastructure.Commands;
 /// $help 命令：不带参数时列出所有命令及其说明；带参数时输出单个命令的详细用法。
 /// 用法：<c>$help [命令名]</c>。
 /// </summary>
-public class HelpCommand : ICommand
+public class HelpCommand : ICommand, IArgValidatingCommand
 {
     /// <summary>命令名称：$help。</summary>
     public string Name => "$help";
 
     /// <summary>命令描述。</summary>
     public string Description => "查看命令帮助，用法: $help [命令名]；不带参数列出全部命令与说明";
+
+    /// <summary>
+    /// 参数校验钩子：带参数时检查该命令名是否存在，避免为 <c>$help 不存在的命令</c> 浪费一次授权。
+    /// </summary>
+    /// <param name="rawArgs">$help 之后的参数文本（命令名）。</param>
+    /// <param name="args">命令参数上下文，需包含命令解析器。</param>
+    /// <param name="error">不合法时的说明文本。</param>
+    /// <returns>参数合法时返回 true。</returns>
+    public bool TryValidateArgs(string rawArgs, CommandArgs? args, out string error)
+    {
+        error = string.Empty;
+
+        var target = rawArgs.Trim();
+        // 不带参数：列出全部命令，合法
+        if (target.Length == 0) return true;
+
+        var parser = args?.Parser;
+        // 拿不到解析器时不判断，避免误拦
+        if (parser == null) return true;
+
+        var name = target.StartsWith('$') ? target : "$" + target;
+        if (parser.GetCommand(name) != null) return true;
+
+        var available = string.Join(" ", parser.GetCommandDescriptions().Keys.OrderBy(k => k, StringComparer.Ordinal));
+        error = $"$help 的目标命令 '{target}' 不存在。可用命令: {available}";
+        return false;
+    }
+
+    /// <summary>
+    /// 取出授权范围：只读命令没有子动作概念，固定为命令名。
+    /// </summary>
+    /// <param name="rawArgs">$help 之后的参数文本。</param>
+    /// <param name="args">命令参数上下文（本命令判定不需要，可为 null）。</param>
+    /// <returns>授权范围。</returns>
+    public string GetPermissionScope(string rawArgs, CommandArgs? args) => Name;
 
     /// <summary>
     /// 执行 $help 命令。

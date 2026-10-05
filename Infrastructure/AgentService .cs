@@ -27,6 +27,10 @@ public class OpenAiAgentService : IAgentService, IDisposable
     private readonly ICommandParser _commandParser;
     /// <summary>命令授权网关，负责在执行代理命令前向本地操作员请求许可。</summary>
     private readonly IAgentPermissionGateway _permissions;
+    /// <summary>服务器注册表，供命令的参数校验钩子使用。</summary>
+    private readonly IServerRegistry _serverRegistry;
+    /// <summary>配置存储，供命令的参数校验钩子使用。</summary>
+    private readonly IConfigurationStore _configStore;
 
     // ---------- 队列相关 ----------
     /// <summary>
@@ -69,18 +73,24 @@ public class OpenAiAgentService : IAgentService, IDisposable
     /// <param name="output">输出写入器，用于记录日志。</param>
     /// <param name="commandParser">命令解析器，用于获取命令描述列表。</param>
     /// <param name="permissions">命令授权网关，用于执行代理命令前请求操作员许可。</param>
+    /// <param name="serverRegistry">服务器注册表，供命令的参数校验钩子使用。</param>
+    /// <param name="configStore">配置存储，供命令的参数校验钩子使用。</param>
     public OpenAiAgentService(
         AppConfig config,
         IServiceProvider serviceProvider,
         IOutputWriter output,
         ICommandParser commandParser,
-        IAgentPermissionGateway permissions)
+        IAgentPermissionGateway permissions,
+        IServerRegistry serverRegistry,
+        IConfigurationStore configStore)
     {
         _configs = config.AIConfigs;
         _serviceProvider = serviceProvider;
         _output = output;
         _commandParser = commandParser;
         _permissions = permissions;
+        _serverRegistry = serverRegistry;
+        _configStore = configStore;
 
         // 启动后台消费者
         _processorTask = Task.Run(ProcessRequestsAsync);
@@ -368,10 +378,19 @@ public class OpenAiAgentService : IAgentService, IDisposable
             var cmd = root.TryGetProperty("command", out var permProp) ? permProp.GetString() : null;
             if (string.IsNullOrEmpty(cmd)) return "空命令";
 
+            // 先拦截不存在的命令/不合法的子命令：不浪费一次授权询问，也不让它进入白名单
+            var validation = ValidateCommand(req, cmd);
+            if (!validation.IsValid)
+            {
+                _output.Write($"AI/{model}", LogLevel.Warning,
+                    $"拒绝申请授权（命令或参数无效）: {cmd}");
+                return validation.Message;
+            }
+
             var reason = root.TryGetProperty("reason", out var reasonProp) ? reasonProp.GetString() : null;
 
             _output.Write($"AI/{model}", LogLevel.Info, $"申请执行授权: {cmd}");
-            var permission = await _permissions.RequestAsync(cmd, reason, req.FromConsole, req.CancellationToken);
+            var permission = await _permissions.RequestAsync(cmd, reason, BuildRequester(req), req.CancellationToken);
 
             // 获批后登记一次性放行，使随后的 execute_command 无需重复提问
             if (permission.IsAllowed)
@@ -385,6 +404,14 @@ public class OpenAiAgentService : IAgentService, IDisposable
         {
             var cmd = root.TryGetProperty("command", out var cmdProp) ? cmdProp.GetString() : null;
             if (string.IsNullOrEmpty(cmd)) return "空命令";
+
+            // 先拦截不存在的命令/不合法的子命令：避免它被当作“未授权”而触发无意义的授权询问
+            var validation = ValidateCommand(req, cmd);
+            if (!validation.IsValid)
+            {
+                _output.Write($"AI/{model}", LogLevel.Warning, $"拒绝执行（命令或参数无效）: {cmd}");
+                return validation.Message;
+            }
 
             // 硬性拦截：白名单放行或本次已获批才允许执行，否则就地请求授权
             var message = await EnsureAuthorizedAsync(req, model, cmd);
@@ -436,12 +463,46 @@ public class OpenAiAgentService : IAgentService, IDisposable
         var permission = await _permissions.RequestAsync(
             command,
             "模型直接请求执行该命令",
-            req.FromConsole,
+            BuildRequester(req),
             req.CancellationToken);
 
         return permission.IsAllowed
             ? null
             : $"命令未执行：{permission.message}。请改用 request_permission 再次申请，或向操作员说明情况。";
+    }
+
+    /// <summary>
+    /// 校验命令是否存在、参数是否合法，并构造供命令自行校验参数用的上下文。
+    /// </summary>
+    /// <param name="req">发起本次工具调用的请求。</param>
+    /// <param name="command">待校验的完整命令文本。</param>
+    /// <returns>校验结果。</returns>
+    private CommandValidation ValidateCommand(Request req, string command)
+    {
+        // 复用同一套依赖构造上下文，使命令的参数校验钩子能访问服务器注册表等
+        var context = new CommandArgs(
+            CommandInvocationValidator.ExtractRawArgs(command),
+            _serverRegistry,
+            this,
+            _configStore)
+        {
+            Parser = _commandParser
+        };
+
+        return CommandInvocationValidator.Validate(_commandParser, command, context);
+    }
+
+    /// <summary>
+    /// 由请求来源构造授权来源对象。
+    /// </summary>
+    /// <param name="req">排队中的请求。</param>
+    /// <returns>授权来源；控制台请求对应 <see cref="IAgentPermissionGateway.Requester.Console"/>。</returns>
+    private static IAgentPermissionGateway.Requester BuildRequester(Request req)
+    {
+        if (req.Source is { } source)
+            return IAgentPermissionGateway.Requester.FromPlayer(source.Item1, source.Item2);
+
+        return IAgentPermissionGateway.Requester.Console;
     }
 
     /// <summary>

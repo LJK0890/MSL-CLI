@@ -24,8 +24,10 @@ public class ServerManager : IServer, IDisposable
     private readonly IServerProcess _process;
     // 服务器启动参数
     private readonly ServerArgument _argument;
-    // AI 服务（用于 $chat/$agent 等 AI 命令）
-    private readonly IAgentService _agentService;
+    // AI 服务的惰性工厂（用于 $chat/$agent 等 AI 命令）
+    private readonly Func<IAgentService> _agentServiceFactory;
+    // 授权网关的惰性工厂：用于把玩家的授权作答路由到对应提问
+    private readonly Func<IAgentPermissionGateway>? _permissionGatewayFactory;
     // 全局应用配置
     private readonly AppConfig _appConfig;
     // 当前运行状态
@@ -65,22 +67,30 @@ public class ServerManager : IServer, IDisposable
     /// <param name="path">服务器目录路径。</param>
     /// <param name="output">控制台输出写入器。</param>
     /// <param name="process">服务器进程实例。</param>
-    /// <param name="agentService">AI 服务。</param>
+    /// <param name="agentServiceFactory">
+    /// AI 服务的惰性工厂。使用工厂而非实例，以避免“注册表 → 服务器 → AI 服务 → 注册表”的构造循环。
+    /// </param>
     /// <param name="appConfig">全局应用配置。</param>
+    /// <param name="permissionGatewayFactory">
+    /// 可选的授权网关工厂。使用工厂而非直接注入，是为了避免
+    /// “注册表 → 服务器 → 网关 → 注册表”的构造循环，只有真正需要路由玩家作答时才解析。
+    /// </param>
     public ServerManager(
         string name,
         string path,
         IOutputWriter output,
         IServerProcess process,
-        IAgentService agentService,
-        AppConfig appConfig)
+        Func<IAgentService> agentServiceFactory,
+        AppConfig appConfig,
+        Func<IAgentPermissionGateway>? permissionGatewayFactory = null)
     {
         _name = name;
         _path = path;
         _output = output;
         _process = process;
-        _agentService = agentService;
+        _agentServiceFactory = agentServiceFactory;
         _appConfig = appConfig;
+        _permissionGatewayFactory = permissionGatewayFactory;
         _properties = new ServerProperties(System.IO.Path.Combine(path, "server.properties"), output);
         _argument = new ServerArgument(name, path, output);
         _process.OutputReceived += OnOutputReceived;
@@ -236,87 +246,19 @@ public class ServerManager : IServer, IDisposable
     }
 
     // ---------- AI 命令解析与处理 ----------
-    // 解析 AI 触发命令（$chat/$agent/@ai），输出配置名、模式、消息与玩家名
-    private bool TryParseAICommand(string raw, out string configName, out bool isAgent, out string message, out string player)
-    {
-        throw new NotImplementedException("AI命令解析尚未实现");
-        configName = "default";
-        isAgent = false;
-        message = string.Empty;
-        player = "Server";
-        if (string.IsNullOrWhiteSpace(raw))
-            return false;
 
-        // 格式1: $chat [config] <message>  或 $agent [config] <instruction>
-        if (raw.StartsWith("$chat", StringComparison.OrdinalIgnoreCase))
-        {
-            isAgent = false;
-            var rest = raw.Substring(5).TrimStart();
-            return ParseConfigAndMessage(rest, out configName, out message);
-        }
-        if (raw.StartsWith("$agent", StringComparison.OrdinalIgnoreCase))
-        {
-            isAgent = true;
-            var rest = raw.Substring(6).TrimStart();
-            return ParseConfigAndMessage(rest, out configName, out message);
-        }
-
-        // 格式2: @ai <config> chat <message>  或 @ai <config> agent <instruction>
-        if (raw.StartsWith("@ai", StringComparison.OrdinalIgnoreCase))
-        {
-            var parts = raw.Substring(3).Trim().Split(' ', 3, StringSplitOptions.RemoveEmptyEntries);
-            if (parts.Length < 3)
-                return false;
-            configName = parts[0];
-            var mode = parts[1].ToLowerInvariant();
-            if (mode == "chat")
-            {
-                isAgent = false;
-                message = parts[2];
-                return true;
-            }
-            else if (mode == "agent")
-            {
-                isAgent = true;
-                message = parts[2];
-                return true;
-            }
-            else
-                return false;
-        }
-
-        return false;
-    }
-
-    // 解析 "$chat/$agent" 剩余部分：可选配置名 + 消息
-    private bool ParseConfigAndMessage(string rest, out string configName, out string message)
-    {
-        throw new NotImplementedException();
-        configName = "default";
-        message = rest.Trim();
-
-        if (string.IsNullOrEmpty(message))
-            return false;
-
-        // 与 AICommand 一致：首个非 "default" 词视为配置名
-        var parts = message.Split(' ', 2, StringSplitOptions.RemoveEmptyEntries);
-        if (parts.Length == 2 && parts[0] != "default")
-        {
-            configName = parts[0];
-            message = parts[1];
-        }
-        // 否则全部作为消息，使用默认配置（由 HandleAICommandAsync 解析为 DefaultAIConfig）
-
-        return !string.IsNullOrEmpty(message);
-    }
-
-    // 调用 AI 服务处理消息，并将回复发送到游戏内与控制台
+    /// <summary>
+    /// 调用 AI 服务处理玩家消息，并把回复发送到游戏内与控制台。
+    /// </summary>
+    /// <param name="configName">AI 配置名，"default" 表示使用全局默认配置。</param>
+    /// <param name="isAgent">是否为代理模式。</param>
+    /// <param name="message">玩家消息内容。</param>
+    /// <param name="player">发起请求的玩家名。</param>
     private async Task HandleAICommandAsync(string configName, bool isAgent, string message, string player)
     {
-        throw new NotImplementedException("AI命令处理尚未实现");
         try
         {
-            // 与 AICommand 一致：configName 为 "default" 时改用 AppConfig 配置的默认 AI 配置
+            // configName 为 "default" 时改用 AppConfig 里的默认 AI 配置
             if (configName.Equals("default", StringComparison.OrdinalIgnoreCase))
             {
                 var defaultName = _appConfig.DefaultAIConfig;
@@ -328,16 +270,17 @@ public class ServerManager : IServer, IDisposable
                 configName = defaultName;
             }
 
+            var agent = _agentServiceFactory();
             var (model, response) = isAgent
-                ? await _agentService.AgentAsync(configName, message, (this, player))
-                : await _agentService.ChatAsync(configName, message, (this, player));
+                ? await agent.AgentAsync(configName, WithPlayerContext(message, player), (this, player))
+                : await agent.ChatAsync(configName, message, (this, player));
 
-            // 发送到游戏内
-            string sayCommand = $"tellraw {(player == "server" ? "@a" : player)} {{\"text\":\"[AI] {response}\",\"color\":\"aqua\"}}";
-            await SendCommandAsync(sayCommand);
+            // 回复发到游戏内；文本用 JSON 序列化，避免引号/换行破坏 tellraw 语法
+            var textJson = JsonSerializer.Serialize($"[AI] {response}");
+            await SendCommandAsync($"tellraw {player} {{\"text\":{textJson},\"color\":\"aqua\"}}");
 
             // 同时打印到控制台（避免丢失）
-            _output.Write(_name, LogLevel.Info, $"[AI回复] {response}");
+            _output.Write(_name, LogLevel.Info, $"[AI回复 → {player}] {response}");
         }
         catch (Exception ex)
         {
@@ -345,17 +288,38 @@ public class ServerManager : IServer, IDisposable
         }
     }
 
+    /// <summary>
+    /// 给玩家消息加上来源标注，使代理知道该请求来自哪个服务器的哪个玩家，
+    /// 从而能用 <c>$server ck op &lt;服务器&gt; &lt;玩家&gt;</c> 判断其是否为管理员。
+    /// </summary>
+    /// <param name="message">玩家消息内容。</param>
+    /// <param name="player">玩家名。</param>
+    /// <returns>带来源标注的消息。</returns>
+    private string WithPlayerContext(string message, string player)
+        => $"[来自服务器 '{_name}' 的玩家 '{player}'] {message}";
+
     // ---------- 输出处理 ----------
     private void OnOutputReceived(object? sender, string data)
     {
         if (string.IsNullOrEmpty(data))
             return;
 
-        // 检测 AI 触发命令
-        // if (!data.Contains("[AI]") && TryParseAICommand(data, out string configName, out bool isAgent, out string message, out string player))
-        // {
-        //    _ = Task.Run(async () => await HandleAICommandAsync(configName, isAgent, message, player));
-        // }
+        // 玩家聊天：优先判定是否为授权作答，其次判定是否为 AI 触发命令
+        // 自己发出的 tellraw 回显（含 [AI]）不再触发，避免自回环
+        if (!data.Contains("[AI]", StringComparison.Ordinal) &&
+            MinecraftChatParser.TryParsePlayerChat(data, out var chat))
+        {
+            // 1. 该玩家是否正在等待授权提问？是则把作答路由过去
+            if (_permissionGatewayFactory?.Invoke().SubmitPlayerResponse(this, chat.Player, chat.Message) == true)
+            {
+                // 已作为授权作答消费，不再当作 AI 命令
+            }
+            else if (MinecraftChatParser.CountAngleBracketPairs(chat.Message) <= 1 &&
+                     MinecraftChatParser.TryParseAiCommand(chat.Message, out var trigger))
+            {
+                _ = Task.Run(() => HandleAICommandAsync(trigger.ConfigName, trigger.IsAgent, trigger.Content, chat.Player));
+            }
+        }
 
         // 普通日志处理
         var match = System.Text.RegularExpressions.Regex.Match(data, @"^\[[^/]*/([A-Z]+)\]");

@@ -232,7 +232,69 @@ $server arg rm  yz javaPath                # 被拒绝（javaPath 不可删除�
 >
 > `$chat` / `$agent` 等简写别名同样已移除，请使用 `$ai chat [配置名] <消息>` 与 `$ai agent [配置名] <指令>`。
 
-此外，服务器控制台输出中若出现 `@ai <配置名> chat|agent <内容>` 形式的文本，会被识别为 AI 触发命令（用于让游戏内玩家触发 AI 回复）。该识别逻辑目前仍处于停用状态（`ServerManager` 中相关调用被注释，且后续处理会抛出 `NotImplementedException`）。
+### 游戏内 AI 触发
+
+玩家在服务器里发送以下任一形式的聊天即可触发 AI：
+
+```
+$chat [配置名] <消息>          以对话模式回复
+$agent [配置名] <指令>         以代理模式执行（可调用工具）
+@ai <配置名> chat|agent <内容>  显式指定配置与模式
+```
+
+省略配置名时使用 `DefaultAIConfig`。回复通过 `tellraw` 发回提出请求的玩家，同时打印到控制台。
+
+识别依据是 Minecraft 服务端的聊天行格式：
+
+```
+[21:08:29] [Server thread/INFO] [net.minecraft.server.MinecraftServer/]: <Sparky_0890> 点任务啊
+```
+
+解析时只在行尾锚定 `<玩家名> 消息`，因此 `[21:08:29]`、`[Server thread/INFO]` 这类日志前缀里的方括号不会被误当成尖括号内容。**聊天正文中出现多于一对尖括号时不转发给 AI**——玩家聊天本身仍能被正常识别，只是不会触发 AI 命令，例如 `<a> <b>` 会被当作普通聊天。
+
+### 玩家请求的授权路由
+
+代理在执行命令前会调用授权网关，网关按请求来源自动决定向谁询问：
+
+| 请求来源 | 行为 |
+| --- | --- |
+| 本地控制台 | 在控制台弹出提问，等待操作员输入 y / a / n |
+| 游戏内玩家、**非管理员** | **直接拒绝**，不产生任何提问 |
+| 游戏内玩家、**管理员** | 用 `tellraw` 把提问发到游戏内，等待该玩家在聊天中作答 y / a / n |
+
+判定管理员的方式是读取该服务器目录下的 `ops.json`（与 `$server ck op` 同一个数据源）；文件不存在或不可读时按“非管理员”处理（失败关闭）。
+
+**先校验命令与参数，再申请授权**：代理调用 `request_permission` 或 `execute_command` 时，会先检查命令名是否已注册，再通过命令自身的参数校验钩子（`IArgValidatingCommand`）检查子命令/动作是否合法。不通过的直接拒绝回传，**不弹授权提问、不执行、也不会被写进白名单**。
+
+```
+命令 '$check' 不存在，未申请授权也未执行。可用命令: $ai $app $exec $file $help $hl $list $server
+$server cfg 未知子动作 'bogus'，可用: get、getall、set、rm、remove。可先用 $help $server 查看用法。
+```
+
+这样做有两个好处：不会为你根本执行不了的命令浪费一次确认；也不会让无效命令（例如重构前的 `$check`）沉淀到 `AgentPermissions.AllowList` 里。目前实现该钩子的命令为 `$server`、`$app`、`$ai`、`$file`、`$help`。
+
+**顺序很关键**：管理员校验发生在白名单判定**之前**。也就是说玩家一旦被取消管理员，即使命令早就在 `AllowList` 里也会被直接拒绝，不会凭历史白名单继续授权。
+
+**白名单按“命令 + 子动作”匹配，不匹配参数**：把命令按「去除首尾空白 + 合并内部连续空白」规范化后，取到**动词那一层**作为授权范围（忽略大小写）。
+
+| 调用 | 授权范围 |
+| --- | --- |
+| `$server ck op yz Alice` | `$server ck op` |
+| `$server cfg get yz` / `$server cfg set yz k v` | `$server cfg get` / `$server cfg set` |
+| `$server buf read yz` | `$server buf read` |
+| `$server ls` / `$server run yz` / `$server stop all` | `$server ls` / `$server run` / `$server stop` |
+| `$app cfg set X Y` | `$app cfg set` |
+| `$exec whoami` | `$exec`（只读命令到命令级） |
+
+因此批准一次 `$server ck op` 只覆盖 `$server ck op`：换服务器名/玩家名不再询问，但 `$server ck wl`、`$server ck bip`、`$server cfg get` 仍需各自授权。写入白名单的也是这个范围字符串；会话内一次性放行同样按范围记录。
+
+上层条目会向下覆盖：手工写 `$server ck` 可一次覆盖 `op`/`wl`/`bp`/`bip`，写 `$server` 可覆盖该命令的全部动作。为兼容历史配置，条目里带 `*` 的按整串前缀匹配，带空格的完整命令（如 `$server cfg get`）按「本次调用以它为前缀」匹配。
+
+> 安全提示：范围到动词为止。若希望某个动作始终单独确认，把对应的范围字符串加入 `AgentPermissions.AlwaysAskCommands`（默认只有 `$exec`）。
+
+玩家的作答必须与提问精确对应：只有发起该提问的那名玩家在其所在服务器发送 `y`/`yes`、`a`/`always`、`n`/`no` 才算有效作答，其余聊天文本不会被当作答消费。同一玩家同时只能有一个待确认的提问，重复请求会被直接拒绝。等待超过 120 秒视为拒绝。`$exec` 依然每次都要确认，管理员选择 `a` 也不会被写入允许列表。
+
+代理模式下，玩家消息会带上 `[来自服务器 'X' 的玩家 'Y']` 标注，代理据此用 `$server ck op <服务器> <玩家>` 判断其是否为管理员。
 
 ---
 

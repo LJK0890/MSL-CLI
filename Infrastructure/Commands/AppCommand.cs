@@ -9,7 +9,7 @@ namespace MSL_CLI.Infrastructure.Commands;
 /// $app 命令：应用程序级操作的唯一入口。
 /// 动作：<c>cfg get|getall|set|rm</c>（应用配置）、<c>exit</c>（退出）、<c>reload</c>（重载配置）、<c>ptcfg</c>（打印配置）。
 /// </summary>
-public class AppCommand : ICommand
+public class AppCommand : ICommand, IArgValidatingCommand
 {
     /// <summary>命令名称：$app。</summary>
     public string Name => "$app";
@@ -17,6 +17,82 @@ public class AppCommand : ICommand
     /// <summary>命令描述。</summary>
     public string Description =>
         "应用级操作。用法: $app cfg get|getall|set|rm ... | $app exit | $app reload | $app ptcfg；详见 $help $app";
+
+    /// <summary>各动作对应的子动作（无子动作的为 null）。</summary>
+    private static readonly Dictionary<string, string[]?> Actions = new(StringComparer.OrdinalIgnoreCase)
+    {
+        ["cfg"] = new[] { "get", "getall", "set", "rm", "remove" },
+        ["exit"] = null,
+        ["reload"] = null,
+        ["ptcfg"] = null
+    };
+
+    /// <summary>
+    /// 参数校验钩子：检查动作是否有效，以及 cfg 的子动作是否合法。
+    /// </summary>
+    /// <param name="rawArgs">$app 之后的参数文本。</param>
+    /// <param name="args">命令参数上下文（本命令校验不需要，可为 null）。</param>
+    /// <param name="error">不合法时的说明文本。</param>
+    /// <returns>参数合法时返回 true。</returns>
+    public bool TryValidateArgs(string rawArgs, CommandArgs? args, out string error)
+    {
+        error = string.Empty;
+
+        var parts = rawArgs.Split(' ', StringSplitOptions.RemoveEmptyEntries);
+        if (parts.Length == 0)
+        {
+            error = $"$app 缺少动作。可用动作: {string.Join("、", Actions.Keys)}";
+            return false;
+        }
+
+        if (!Actions.TryGetValue(parts[0], out var subActions))
+        {
+            error = $"$app 未知动作 '{parts[0]}'，可用: {string.Join("、", Actions.Keys)}。" +
+                    "可先用 $help $app 查看用法。";
+            return false;
+        }
+
+        if (subActions == null) return true;
+
+        if (parts.Length < 2)
+        {
+            error = $"$app {parts[0]} 缺少子动作，可用: {string.Join("、", subActions)}。";
+            return false;
+        }
+
+        if (!subActions.Contains(parts[1], StringComparer.OrdinalIgnoreCase))
+        {
+            error = $"$app {parts[0]} 未知子动作 '{parts[1]}'，可用: {string.Join("、", subActions)}。";
+            return false;
+        }
+
+        return true;
+    }
+
+    /// <summary>
+    /// 取出授权范围：命令 + 动作 + （存在时的）子动作，
+    /// 例如 <c>$app cfg get</c>、<c>$app exit</c>。
+    /// </summary>
+    /// <param name="rawArgs">$app 之后的参数文本。</param>
+    /// <param name="args">命令参数上下文（本命令判定不需要，可为 null）。</param>
+    /// <returns>授权范围。</returns>
+    public string GetPermissionScope(string rawArgs, CommandArgs? args)
+    {
+        var parts = rawArgs.Split(' ', StringSplitOptions.RemoveEmptyEntries);
+        if (parts.Length == 0) return Name;
+
+        var action = parts[0].ToLowerInvariant();
+        if (!Actions.TryGetValue(action, out var subActions))
+            return Name;
+
+        var scope = $"{Name} {action}";
+        if (subActions == null) return scope;
+        if (parts.Length < 2) return scope;
+
+        return subActions.Contains(parts[1], StringComparer.OrdinalIgnoreCase)
+            ? $"{scope} {parts[1].ToLowerInvariant()}"
+            : scope;
+    }
 
     /// <summary>
     /// 执行 $app 命令，按动作分发。

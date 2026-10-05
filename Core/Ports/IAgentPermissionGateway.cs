@@ -27,11 +27,30 @@ public readonly record struct AgentPermissionResult(AgentPermissionDecision Deci
 }
 
 /// <summary>
-/// 代理命令授权网关，负责在执行代理发起的命令前向本地操作员请求许可，
+/// 代理命令授权网关，负责在执行代理发起的命令前向“有权授权的一方”请求许可，
 /// 并管理“总是允许”白名单与会话内一次性放行。
 /// </summary>
 public interface IAgentPermissionGateway
 {
+    /// <summary>
+    /// 授权请求的来源。
+    /// </summary>
+    /// <param name="Server">来源服务器；为 null 表示来自本地控制台。</param>
+    /// <param name="Player">来源玩家名；为 null 表示来自本地控制台。</param>
+    /// <param name="FromConsole">是否来自本地控制台。</param>
+    public readonly record struct Requester(IServer? Server, string? Player, bool FromConsole)
+    {
+        /// <summary>构造一个来自本地控制台的请求来源。</summary>
+        /// <returns>控制台来源。</returns>
+        public static Requester Console => new(null, null, true);
+
+        /// <summary>构造一个来自指定服务器玩家的请求来源。</summary>
+        /// <param name="server">来源服务器。</param>
+        /// <param name="player">玩家名。</param>
+        /// <returns>玩家来源。</returns>
+        public static Requester FromPlayer(IServer server, string player) => new(server, player, false);
+    }
+
     /// <summary>
     /// 判断命令是否已被持久化白名单覆盖（不产生任何提问）。
     /// </summary>
@@ -40,21 +59,31 @@ public interface IAgentPermissionGateway
     bool IsAllowedByPolicy(string command);
 
     /// <summary>
-    /// 就一条命令向本地操作员请求授权，并在得到“总是允许”时持久化白名单。
+    /// 就一条命令请求授权。控制台来源向本地操作员提问；玩家来源先校验其是否为管理员，
+    /// 是则把提问发到游戏内并等待该玩家作答，否则直接拒绝。
     /// </summary>
     /// <param name="command">要执行的完整命令文本。</param>
-    /// <param name="reason">模型给出的执行理由，用于展示给操作员。</param>
-    /// <param name="allowPrompt">是否允许弹出交互提问；为 false 时仅依据白名单裁决。</param>
+    /// <param name="reason">模型给出的执行理由，用于展示给授权方。</param>
+    /// <param name="requester">授权请求的来源。</param>
     /// <param name="cancellationToken">取消令牌。</param>
     /// <returns>授权裁决结果。</returns>
     Task<AgentPermissionResult> RequestAsync(
         string command,
         string? reason,
-        bool allowPrompt,
+        Requester requester,
         CancellationToken cancellationToken = default);
 
     /// <summary>
-    /// 消费一条会话内一次性放行记录，成功消费表示该命令此前已获操作员批准。
+    /// 提交一名玩家对授权提问的作答（由服务器聊天行驱动）。
+    /// </summary>
+    /// <param name="server">作答玩家所在服务器。</param>
+    /// <param name="player">作答玩家名。</param>
+    /// <param name="message">玩家发送的聊天文本。</param>
+    /// <returns>该作答被接纳（存在对应提问且内容有效）时返回 true。</returns>
+    bool SubmitPlayerResponse(IServer server, string player, string message);
+
+    /// <summary>
+    /// 消费一条会话内一次性放行记录，成功消费表示该命令此前已获批准。
     /// </summary>
     /// <param name="command">完整命令文本。</param>
     /// <returns>存在并成功消费时返回 true。</returns>

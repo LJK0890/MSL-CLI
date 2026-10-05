@@ -17,8 +17,8 @@ public class ServerRegistry : IServerRegistry, IDisposable
     private readonly IOutputWriter _output;
     // 服务提供器，用于为每个服务器创建独立的进程实例
     private readonly IServiceProvider _serviceProvider;
-    // AI 服务
-    private readonly IAgentService _agentService;
+    // AI 服务的惰性工厂
+    private readonly Func<IAgentService> _agentServiceFactory;
     // 全局应用配置
     private readonly AppConfig _appConfig;
 
@@ -28,16 +28,19 @@ public class ServerRegistry : IServerRegistry, IDisposable
     /// <param name="config">全局应用配置。</param>
     /// <param name="output">控制台输出写入器。</param>
     /// <param name="serviceProvider">服务提供器。</param>
-    /// <param name="agentService">AI 服务。</param>
+    /// <param name="agentServiceFactory">
+    /// AI 服务的惰性工厂。直接用 IAgentService 注入会形成
+    /// ICommandExecutor → IServerRegistry → IAgentService → IServerRegistry 的构造循环，故按需解析。
+    /// </param>
     public ServerRegistry(
         AppConfig config,
         IOutputWriter output,
         IServiceProvider serviceProvider,
-        IAgentService agentService)
+        Func<IAgentService> agentServiceFactory)
     {
         _output = output;
         _serviceProvider = serviceProvider;
-        _agentService = agentService;
+        _agentServiceFactory = agentServiceFactory;
         _appConfig = config;    // 保存用于重建
         foreach (var kv in config.ServerPaths)
         {
@@ -46,14 +49,23 @@ public class ServerRegistry : IServerRegistry, IDisposable
                 kv.Value,
                 output,
                 CreateProcess(),
-                agentService,
-                config);
+                agentServiceFactory,
+                config,
+                GetPermissionGateway);
             _servers[kv.Key] = sm;
         }
     }
 
     // 每个服务器拥有独立的进程实例，避免多个服务器共享同一个进程/输出事件
     private IServerProcess CreateProcess() => _serviceProvider.GetRequiredService<IServerProcess>();
+
+    /// <summary>
+    /// 授权网关的惰性工厂：服务器需要把玩家的授权作答路由到对应提问时才解析。
+    /// 使用工厂而非直接注入，避免“注册表 → 服务器 → 网关 → 注册表”的构造循环。
+    /// </summary>
+    /// <returns>授权网关实例。</returns>
+    private IAgentPermissionGateway GetPermissionGateway()
+        => _serviceProvider.GetRequiredService<IAgentPermissionGateway>();
 
     // 在 Reload 中也传递
     /// <summary>
@@ -79,8 +91,9 @@ public class ServerRegistry : IServerRegistry, IDisposable
                     kv.Value,
                     _output,
                     CreateProcess(),
-                    _agentService,
-                    newConfig);
+                    _agentServiceFactory,
+                    newConfig,
+                    GetPermissionGateway);
             }
             _servers[kv.Key] = sm;
         }
@@ -149,7 +162,7 @@ public class ServerRegistry : IServerRegistry, IDisposable
         _servers.Clear();
         foreach (var kv in config.ServerPaths)
         {
-            var sm = new ServerManager(kv.Key, kv.Value, _output, CreateProcess(), _agentService, config);
+            var sm = new ServerManager(kv.Key, kv.Value, _output, CreateProcess(), _agentServiceFactory, config, GetPermissionGateway);
             _servers[kv.Key] = sm;
         }
         // 如果当前高亮服务器不存在，重置
