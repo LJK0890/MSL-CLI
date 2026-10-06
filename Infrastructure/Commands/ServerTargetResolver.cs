@@ -39,7 +39,7 @@ internal static class ServerTargetResolver
         var highlighted = args.ServerRegistry.HighlightedServerName;
         if (string.IsNullOrEmpty(highlighted))
         {
-            error = "未设置高亮服务器，请指定服务器名或先用 $hl <服务器名> 设置高亮";
+            error = "未设置高亮服务器，请指定服务器名或先用 $server hl <服务器名> 设置高亮";
             return null;
         }
 

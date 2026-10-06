@@ -1,4 +1,4 @@
-﻿using MSL_CLI.Core.Domain;
+using MSL_CLI.Core.Domain;
 using MSL_CLI.Core.Ports;
 
 namespace MSL_CLI.Infrastructure.Commands;
@@ -31,7 +31,7 @@ public class ListCommand : ICommand
             return Task.FromResult(new CommandResult(0, msg));
         }
 
-        var names = parser.GetCommandDescriptions().Keys.OrderBy(k => k);
+        var names = parser.GetCommandDescriptions().Keys.OrderBy(k => k, StringComparer.Ordinal);
         var text = string.Join(" ", names);
 
         output?.Write("Command", LogLevel.Success, text);

@@ -75,7 +75,7 @@ public class HelpCommand : ICommand, IArgValidatingCommand
         {
             var sb = new StringBuilder();
             sb.AppendLine("可用命令：");
-            foreach (var kv in descriptions.OrderBy(k => k.Key))
+            foreach (var kv in descriptions.OrderBy(k => k.Key, StringComparer.Ordinal))
                 sb.AppendLine($"  {kv.Key,-14} {kv.Value}");
             sb.AppendLine();
             sb.AppendLine("用 $help <命令名> 查看单个命令的详细用法。");
@@ -89,7 +89,7 @@ public class HelpCommand : ICommand, IArgValidatingCommand
         var command = parser.GetCommand(name);
         if (command == null)
         {
-            var available = string.Join(" ", descriptions.Keys.OrderBy(k => k));
+            var available = string.Join(" ", descriptions.Keys.OrderBy(k => k, StringComparer.Ordinal));
             var msg = $"未找到命令 '{target}'。可用命令: {available}";
             output?.Write("Command", LogLevel.Error, msg);
             return Task.FromResult(new CommandResult(0, msg));
@@ -113,15 +113,27 @@ internal static class HelpText
     /// <summary>命令名到详细用法的映射。</summary>
     private static readonly Dictionary<string, string> Texts = new(StringComparer.OrdinalIgnoreCase)
     {
-        ["$ai"] = "$ai chat|agent [配置名] <消息>   # 对话 / 代理执行；省略配置名时用 DefaultAIConfig",
-        ["$app"] = "$app cfg get [路径] | $app cfg getall | $app cfg set <路径> <值> | $app cfg rm <路径>\n" +
-                   "         $app exit | $app reload | $app ptcfg",
-        ["$exec"] = "$exec <命令/脚本路径> [参数...]   # 执行系统命令；由 AI 代理调用时需操作员确认",
+        ["$ai"] = "$ai chat|agent [配置名] <消息>   # 对话 / 代理执行；省略配置名时用 DefaultAIConfig\n" +
+                   "         $ai default [配置名]           # 查看 / 设置默认 AI 配置\n" +
+                   "         $ai add <配置名> <Url> <Model> [ApiKeyEnv]   # 新增 AI 实例（即时生效）\n" +
+                   "         $ai rm <配置名>                # 删除 AI 实例\n" +
+                   "         $ai cfg get [路径] | getall | set <路径> <值> | rm <路径>   # AI 相关配置\n" +
+                   "         $ai perm [get|add|rm|ask|noask] [范围]         # 代理命令授权",
+        ["$app"] = "$app exec <命令/脚本路径> [参数...]   # 执行系统命令；代理调用时每次都要确认\n" +
+                   "         $app cfg get [路径] | $app cfg getall | $app cfg set <路径> <值> | $app cfg rm <路径>\n" +
+                   "         $app exit | $app reload | $app ptcfg\n" +
+                   "         # 高危 / 大权限操作入口，也是访问任意配置的第二路径",
         ["$file"] = "$file read|write|list|delete <路径> [内容]   # 仅限白名单目录；支持 %appdata%、%<服务器名>%",
         ["$help"] = "$help [命令名]",
         ["$list"] = "$list   # 只列出全部命令名（不含说明）",
-        ["$hl"] = "$hl <服务器名>   # 切换高亮服务器；不带参数显示当前高亮",
-        ["$server"] = "$server cfg get|getall|set|rm [服务器名] [键] [值]\n" +
+        ["$server"] = "$server add <名称> <路径>            # 登记新服务器（路径须已存在，支持 %VAR% 环境变量）\n" +
+                      "         $server rm <名称>                  # 只移除配置引用，保留服务器目录\n" +
+                      "         $server del <名称> confirm         # 移除引用并删除整个服务器目录（不可恢复）\n" +
+                      "         $server lk|ulk <名称>              # 锁定 / 解锁（锁定后 run/stop/send/rm/del 被拒）\n" +
+                      "         $server hd|uhd <名称>              # 隐藏 / 显示该服务器在控制台的输出\n" +
+                      "         $server hl [名称]                  # 查看 / 切换高亮服务器\n" +
+                      "         $server file -r|-w|-a|-rm|-cp|-mv|-ls <参数...>      # 服务器目录内文件操作\n" +
+                      "         $server cfg get|getall|set|rm [服务器名] [键] [值]\n" +
                       "         $server arg get|set|rm <服务器名> <参数> [值...]\n" +
                       "         $server ck wl|op|bp|bip <服务器名|all> [名称]\n" +
                       "         $server buf read|update <服务器名>\n" +
@@ -129,7 +141,7 @@ internal static class HelpText
                       "         $server bp <服务器名> [备注]\n" +
                       "         $server query <服务器名|all>\n" +
                       "         $server status [服务器名|all]\n" +
-                      "         $server stop <服务器名|all>\n" +
+                      "         $server stop <服务器名|all> [-f]   # 停止服务器（-f 强制终止）\n" +
                       "         $server run <服务器名>\n" +
                       "         $server send <服务器名|all> <命令>"
     };

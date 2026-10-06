@@ -3,8 +3,9 @@ using MSL_CLI.Core.Domain;
 using MSL_CLI.Core.Ports;
 using MSL_CLI.Core.UseCases;
 using MSL_CLI.Infrastructure;
+using MSL_CLI.CLI;
 
-namespace MSL_CLI.CLI;
+namespace MSL_CLI;
 
 /// <summary>
 /// 程序入口类，负责组装依赖注入容器、启动输入监听并协调整个应用的生命周期。
@@ -16,7 +17,7 @@ public class Program
     /// </summary>
     /// <param name="args">命令行参数。</param>
     /// <returns>表示异步入口方法的任务。</returns>
-    public static async Task Main(string[] args)
+    public static async Task Main()
     {
         // ---------- 全局异常捕获 ----------
         AppDomain.CurrentDomain.UnhandledException += (sender, e) =>
@@ -99,39 +100,58 @@ public class Program
         // ---------- 6. 启动输入监听 ----------
         var cts = new CancellationTokenSource();
 
-        // 使用队列处理输入（由 IInputReader 内部串行化）
-        inputReader.OnInputReceived += async (s, line) =>
+        /// <summary>
+        /// 处理一行控制台输入：$ 开头交给命令执行器，否则转发给高亮服务器。
+        /// 全部异常都在方法内部兜底，因此可以安全地“即发即弃”。
+        /// </summary>
+        async Task HandleInputAsync(string line)
         {
-            if (string.IsNullOrWhiteSpace(line)) return;
-
             try
             {
+                if (string.IsNullOrWhiteSpace(line)) return;
+
                 // $ 开头视为系统指令，交给命令执行器处理
-                if (line.StartsWith("$"))
+                if (line.StartsWith('$'))
                 {
                     var result = await executor.ExecuteAsync(line, output);
                     // 执行器请求退出时取消主循环等待，触发清理流程
                     if (result != null && result.ExitRequested)
                     {
                         output.Write("GLOBAL", LogLevel.Info, "收到退出指令，正在关闭...");
-                        cts.Cancel();
+                        await cts.CancelAsync();
                     }
                 }
                 else
                 {
                     // 普通文本视为发送给当前高亮服务器的命令
                     var hl = registry.GetHighlightedServer();
-                    if (hl != null)
-                        await hl.SendCommandAsync(line);
-                    else
+                    if (hl == null)
+                    {
                         output.Write("GLOBAL", LogLevel.Warning, "未高亮服务器，无法发送命令");
+                    }
+                    else if (configStore.LoadConfig().LockedServers
+                                 .Any(n => string.Equals(n, hl.Name, StringComparison.OrdinalIgnoreCase)))
+                    {
+                        // 锁定的服务器不接受任何操作；这里同样拦截控制台直发
+                        output.Write("GLOBAL", LogLevel.Warning,
+                            $"服务器 '{hl.Name}' 已锁定，已拒绝转发（$server ulk {hl.Name} 可解锁）");
+                    }
+                    else
+                    {
+                        await hl.SendCommandAsync(line);
+                    }
                 }
             }
             catch (Exception ex)
             {
                 output.Write("GLOBAL", LogLevel.Error, $"处理输入时发生异常: {ex.Message}");
             }
-        };
+        }
+
+        // 使用队列处理输入（由 IInputReader 内部串行化）。
+        // 事件是 void 返回的委托，async void 一旦漏出异常会直接终止进程（VSTHRD101），
+        // 因此这里用同步 lambda 转发到异步方法并显式丢弃返回的 Task。
+        inputReader.OnInputReceived += (_, line) => _ = HandleInputAsync(line);
 
         output.Write("GLOBAL", LogLevel.Info, "MSL_CLI 启动，输入命令...");
         inputReader.StartReading();

@@ -16,6 +16,6 @@ Provides a unified AI entry `$ai` (`chat` / `agent` / `default`) and a `DefaultA
 
 ---
 
-**技术栈 / Stack**：C# / .NET 10.0 · Microsoft.Extensions.DependencyInjection · OpenAI SDK · McQuery.Net
+**技术栈 / Stack**：C# / .NET 10.0 · Microsoft.Extensions.DependencyInjection 9.0.0 · OpenAI SDK 2.12.0 · McQuery.Net 2.0.0 · System.Configuration.ConfigurationManager 10.0.10
 
 **License**：[MIT](LICENSE.txt)

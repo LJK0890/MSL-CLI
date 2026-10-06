@@ -119,7 +119,7 @@ internal static class ServerConfigHandler
         if (value == null)
         {
             var missing = $"键 '{key}' 不存在或未设置";
-            output?.Write("Command", LogLevel.Success, missing);
+            output?.Write("Command", LogLevel.Warning, missing);
             return new CommandResult(1, missing);
         }
 
@@ -138,8 +138,8 @@ internal static class ServerConfigHandler
     private static CommandResult Set(CommandArgs args, string tail, IOutputWriter? output)
     {
         var parts = tail.Split(' ', StringSplitOptions.RemoveEmptyEntries);
-        if (!ResolveKeyValue(args, parts, output, out var serverName, out var key, out var value))
-            return new CommandResult(0, "参数不足");
+        var failure = ResolveKeyValue(args, parts, output, out var serverName, out var key, out var value);
+        if (failure != null) return failure;
 
         var server = args.ServerRegistry.GetServer(serverName!);
         if (server == null) return Fail(output, $"未找到服务器 '{serverName}'");
@@ -199,12 +199,12 @@ internal static class ServerConfigHandler
     /// </summary>
     /// <param name="args">命令参数，包含服务器注册表。</param>
     /// <param name="parts">动作之后的参数。</param>
-    /// <param name="output">输出写入器，用于输出用法。</param>
+    /// <param name="output">输出写入器，用于输出用法与错误。</param>
     /// <param name="serverName">解析出的服务器名。</param>
     /// <param name="key">解析出的键。</param>
     /// <param name="value">解析出的值。</param>
-    /// <returns>解析成功返回 true。</returns>
-    private static bool ResolveKeyValue(
+    /// <returns>解析成功时返回 null；失败时返回已输出的失败结果（含具体原因，不再被泛化文案覆盖）。</returns>
+    private static CommandResult? ResolveKeyValue(
         CommandArgs args,
         string[] parts,
         IOutputWriter? output,
@@ -221,26 +221,25 @@ internal static class ServerConfigHandler
             serverName = parts[0];
             key = parts[1];
             value = string.Join(" ", parts.Skip(2));
-            return true;
+            return null;
         }
+
+        // "$server cfg set <服务器名> <键>"：首个参数确实是服务器名，但漏写了值。
+        // 这里必须明确报错，否则会被当成“高亮服务器上的 <键>=<服务器名>”写入错误的服务器。
+        if (parts.Length == 2 && args.ServerRegistry.GetServer(parts[0]) != null)
+            return Fail(output, $"用法: $server cfg set {parts[0]} <键> <值>（缺少值）");
 
         // 省略服务器名：使用高亮服务器，首个参数为键
         if (parts.Length < 2)
-        {
-            Fail(output, "用法: $server cfg set [服务器名] <键> <值>");
-            return false;
-        }
+            return Fail(output, "用法: $server cfg set [服务器名] <键> <值>");
 
         serverName = ResolveServer(args, null, out var error);
         if (serverName == null)
-        {
-            Fail(output, error!);
-            return false;
-        }
+            return Fail(output, error!);
 
         key = parts[0];
         value = string.Join(" ", parts.Skip(1));
-        return true;
+        return null;
     }
 
     /// <summary>
@@ -267,7 +266,7 @@ internal static class ServerConfigHandler
         var highlighted = args.ServerRegistry.HighlightedServerName;
         if (string.IsNullOrEmpty(highlighted))
         {
-            error = "未设置高亮服务器，请指定服务器名或先用 $hl <服务器名> 设置高亮";
+            error = "未设置高亮服务器，请指定服务器名或先用 $server hl <服务器名> 设置高亮";
             return null;
         }
 

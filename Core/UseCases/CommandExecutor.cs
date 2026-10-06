@@ -40,8 +40,8 @@ public class CommandExecutor : ICommandExecutor
         if (string.IsNullOrWhiteSpace(input))
             return new CommandResult(0, string.Empty);
 
-        // 将输入按首个空格拆分为命令名与剩余参数
-        var parts = input.Split(' ', 2, StringSplitOptions.RemoveEmptyEntries);
+        // 将输入按首个空白拆分为命令名与剩余参数（兼容空格与制表符分隔）
+        var parts = input.Split((char[]?)null, 2, StringSplitOptions.RemoveEmptyEntries);
         var cmdName = parts[0];
         var argsRaw = parts.Length > 1 ? parts[1] : string.Empty;
 

@@ -12,14 +12,19 @@ public class ConsoleOutputWriter : IOutputWriter
     // 是否启用 ANSI 颜色输出（仅在终端支持且未显式禁用时启用）
     private readonly bool _useColor;
 
+    // 串行化控制台写入，避免多线程输出互相穿插
+    private readonly Lock _consoleLock = new();
+
     /// <summary>
     /// 初始化 <see cref="ConsoleOutputWriter"/> 的新实例，并检测当前环境是否支持颜色输出。
     /// </summary>
     public ConsoleOutputWriter()
     {
-        // 仅在标准输出未重定向且显式启用颜色时使用
+        // 仅在标准输出未重定向、未通过 NO_COLOR 关闭颜色时使用
+        // （NO_COLOR 的通行约定是“只要设置了非空值就关闭”，而不是必须等于 "true"）
+        var noColor = !string.IsNullOrEmpty(Environment.GetEnvironmentVariable("NO_COLOR"));
         _useColor = !Console.IsOutputRedirected &&
-                    Environment.GetEnvironmentVariable("NO_COLOR")?.Equals("true", StringComparison.OrdinalIgnoreCase) != true &&
+                    !noColor &&
                     TryEnableAnsi();
     }
 
@@ -29,30 +34,32 @@ public class ConsoleOutputWriter : IOutputWriter
     /// <returns>当前终端是否支持 ANSI 颜色输出。</returns>
     private bool TryEnableAnsi()
     {
-        if (Environment.OSVersion.Platform == PlatformID.Win32NT)
+        if (!OperatingSystem.IsWindows())
+            return true; // Linux/macOS 终端默认支持
+
+        try
         {
-            // Windows 10+ 尝试启用虚拟终端处理
-            try
-            {
-                var handle = Console.Out.GetType().GetProperty("Handle")?.GetValue(Console.Out, null);
-                if (handle != null)
-                {
-                    var handleInt = (IntPtr)handle;
-                    const int ENABLE_VIRTUAL_TERMINAL_PROCESSING = 0x0004;
-                    var mode = 0;
-                    if (NativeMethods.GetConsoleMode(handleInt, ref mode) && (mode & ENABLE_VIRTUAL_TERMINAL_PROCESSING) == 0)
-                    {
-                        // 尚未开启虚拟终端处理，则开启后写回
-                        mode |= ENABLE_VIRTUAL_TERMINAL_PROCESSING;
-                        NativeMethods.SetConsoleMode(handleInt, mode);
-                    }
-                }
-                return true;
-            }
-            catch { return false; }
+            // 用 GetStdHandle 拿真正的控制台句柄：
+            // 以前用反射找 Console.Out 的 "Handle" 属性，该属性并不存在，
+            // 于是模式从未被设置，函数却仍然返回 true —— 旧版 conhost 上会直接打印出转义序列
+            var handle = NativeMethods.GetStdHandle(StdOutputHandle);
+            if (handle == IntPtr.Zero || handle == new IntPtr(-1))
+                return false;
+
+            var mode = 0;
+            if (!NativeMethods.GetConsoleMode(handle, ref mode))
+                return false;
+
+            if ((mode & EnableVirtualTerminalProcessing) == 0 &&
+                !NativeMethods.SetConsoleMode(handle, mode | EnableVirtualTerminalProcessing))
+                return false;
+
+            return true;
         }
-        // Linux/macOS 默认支持
-        return true;
+        catch
+        {
+            return false;
+        }
     }
 
     /// <summary>
@@ -64,22 +71,21 @@ public class ConsoleOutputWriter : IOutputWriter
     /// <param name="includeTimestamp">是否在消息前附带当前时间戳，默认为 true。</param>
     public void Write(string context, LogLevel level, string message, bool includeTimestamp = true)
     {
-        var timestamp = includeTimestamp ? $"[{DateTime.Now:HH:mm:ss}] " : "";
+        var timestamp = includeTimestamp
+            ? $"[{DateTime.Now.ToString("HH:mm:ss", System.Globalization.CultureInfo.InvariantCulture)}] "
+            : "";
         var levelStr = level != LogLevel.Debug ? level.ToString() : "DEBUG";
         var prefix = $"[{context}/{levelStr}] ";
-        string formatted = $"{prefix}{timestamp}{message}";
+        var formatted = $"{prefix}{timestamp}{message}";
 
-        if (_useColor)
+        // 颜色码与正文必须一次写出并加锁：多线程（各服务器输出泵 + 代理 + 控制台）
+        // 若分成两次 Console 调用，别的线程可能插在中间，导致串行错乱与颜色串色
+        lock (_consoleLock)
         {
-            // 支持颜色时先写入 ANSI 颜色码，输出后再重置
-            var colorCode = GetAnsiColor(level);
-            Console.Write(colorCode);
-            Console.WriteLine(formatted);
-            Console.ResetColor();
-        }
-        else
-        {
-            Console.WriteLine(formatted);
+            if (_useColor)
+                Console.WriteLine(GetAnsiColor(level) + formatted + "\x1b[0m");
+            else
+                Console.WriteLine(formatted);
         }
     }
 
@@ -102,10 +108,28 @@ public class ConsoleOutputWriter : IOutputWriter
 
     // 简单 P/Invoke 声明（仅 Windows）
     /// <summary>
+    /// 标准输出句柄编号（GetStdHandle 参数）。
+    /// </summary>
+    private const int StdOutputHandle = -11;
+
+    /// <summary>
+    /// 启用 ANSI 虚拟终端处理的控制台模式位。
+    /// </summary>
+    private const int EnableVirtualTerminalProcessing = 0x0004;
+
+    /// <summary>
     /// 控制台模式相关的原生方法声明（仅 Windows 使用）。
     /// </summary>
     private static class NativeMethods
     {
+        /// <summary>
+        /// 获取标准设备句柄。
+        /// </summary>
+        /// <param name="nStdHandle">标准设备编号（-11 = 标准输出）。</param>
+        /// <returns>设备句柄；失败时返回 INVALID_HANDLE_VALUE。</returns>
+        [System.Runtime.InteropServices.DllImport("kernel32.dll", SetLastError = true)]
+        public static extern IntPtr GetStdHandle(int nStdHandle);
+
         /// <summary>
         /// 获取指定控制台句柄的当前控制台模式。
         /// </summary>

@@ -18,9 +18,16 @@ public class AppConfig
     /// </summary>
     public Dictionary<string, string> ServerPaths { get; set; } = new();
     /// <summary>
-    /// 属性信息 LRU 缓存的最大容量，小于等于 0 时回退为默认值 128。
+    /// 已锁定的服务器名称列表。锁定的服务器禁止 <c>run</c>/<c>stop</c>/<c>send</c>/<c>rm</c>/<c>del</c>
+    /// 五类操作，只允许 <c>$server ulk</c> 解锁；其余配置、查看类操作不受影响。
     /// </summary>
-    public static int MaxPropertyCacheLength { get; set; } = 128;
+    public List<string> LockedServers { get; set; } = new();
+    /// <summary>
+    /// 在控制台隐藏输出的服务器名称列表（<c>$server hd</c>/<c>uhd</c>）。
+    /// 隐藏后该服务器的进程输出不再写到控制台与日志，但仍会进入输出缓冲区，
+    /// 因此 <c>$server buf read</c> 与 AI 代理读取日志不受影响。
+    /// </summary>
+    public List<string> HiddenServers { get; set; } = new();
     /// <summary>
     /// 默认使用的 AI 配置名称，未显式指定 AI 配置时生效。
     /// </summary>

@@ -6,8 +6,11 @@ using MSL_CLI.Core.Ports;
 namespace MSL_CLI.Infrastructure.Commands;
 
 /// <summary>
-/// $app 命令：应用程序级操作的唯一入口。
-/// 动作：<c>cfg get|getall|set|rm</c>（应用配置）、<c>exit</c>（退出）、<c>reload</c>（重载配置）、<c>ptcfg</c>（打印配置）。
+/// $app 命令：高危 / 大权限操作的统一入口，也是访问任意配置的“第二路径”。
+/// 动作：<c>cfg get|getall|set|rm</c>（任意应用配置）、<c>exec</c>（执行系统命令）、
+/// <c>exit</c>（退出）、<c>reload</c>（重载配置）、<c>ptcfg</c>（打印配置）。
+/// 日常的 AI 配置请用 <c>$ai cfg</c>、服务器配置请用 <c>$server</c>；
+/// 这里放的是它们覆盖不到、或权限更大的操作。
 /// </summary>
 public class AppCommand : ICommand, IArgValidatingCommand
 {
@@ -16,12 +19,13 @@ public class AppCommand : ICommand, IArgValidatingCommand
 
     /// <summary>命令描述。</summary>
     public string Description =>
-        "应用级操作。用法: $app cfg get|getall|set|rm ... | $app exit | $app reload | $app ptcfg；详见 $help $app";
+        "高危/大权限操作。用法: $app cfg get|getall|set|rm ... | $app exec <命令> [参数...] | $app exit | $app reload | $app ptcfg";
 
     /// <summary>各动作对应的子动作（无子动作的为 null）。</summary>
     private static readonly Dictionary<string, string[]?> Actions = new(StringComparer.OrdinalIgnoreCase)
     {
         ["cfg"] = new[] { "get", "getall", "set", "rm", "remove" },
+        ["exec"] = null,
         ["exit"] = null,
         ["reload"] = null,
         ["ptcfg"] = null
@@ -52,7 +56,16 @@ public class AppCommand : ICommand, IArgValidatingCommand
             return false;
         }
 
-        if (subActions == null) return true;
+        if (subActions == null)
+        {
+            // exec 需要命令/脚本路径
+            if (parts[0].Equals("exec", StringComparison.OrdinalIgnoreCase) && parts.Length < 2)
+            {
+                error = "用法: $app exec <命令/脚本路径> [参数...]";
+                return false;
+            }
+            return true;
+        }
 
         if (parts.Length < 2)
         {
@@ -89,9 +102,12 @@ public class AppCommand : ICommand, IArgValidatingCommand
         if (subActions == null) return scope;
         if (parts.Length < 2) return scope;
 
-        return subActions.Contains(parts[1], StringComparer.OrdinalIgnoreCase)
-            ? $"{scope} {parts[1].ToLowerInvariant()}"
-            : scope;
+        if (!subActions.Contains(parts[1], StringComparer.OrdinalIgnoreCase))
+            return scope;
+
+        // 别名归一化：$app cfg remove 与 $app cfg rm 共用同一个授权范围
+        var subAction = parts[1].ToLowerInvariant();
+        return subAction == "remove" ? $"{scope} rm" : $"{scope} {subAction}";
     }
 
     /// <summary>
@@ -112,6 +128,7 @@ public class AppCommand : ICommand, IArgValidatingCommand
         return action switch
         {
             "cfg" => Task.FromResult(HandleConfig(rest, args, output)),
+            "exec" => AppExecHandler.RunAsync(rest, output),
             "exit" => Task.FromResult(HandleExit(output)),
             "reload" => Task.FromResult(HandleReload(args, output)),
             "ptcfg" => Task.FromResult(HandlePrintConfig(args, output)),
@@ -169,7 +186,7 @@ public class AppCommand : ICommand, IArgValidatingCommand
             }
 
             var value = AppConfigPath.GetValueByPath(config, path);
-            var text = $"{path} : {value?.ToString() ?? "(null)"}";
+            var text = $"{path} : {AppConfigPath.FormatValue(value)}";
             output?.Write("Command", LogLevel.Success, text);
             return new CommandResult(1, text);
         }
@@ -263,8 +280,10 @@ public class AppCommand : ICommand, IArgValidatingCommand
         {
             var newConfig = args.ConfigStore.LoadConfig();
             args.ServerRegistry.Reload(newConfig);
+            // AI 实例集合同样热更新，避免改了 AIConfigs 却要重启才生效
+            args.AgentService?.ReloadConfig(newConfig);
 
-            var msg = "配置已重新加载，服务器列表已更新（运行中的服务器未受影响）";
+            var msg = "配置已重新加载，服务器列表与 AI 实例已更新（运行中的服务器未受影响）";
             output?.Write("Command", LogLevel.Success, msg);
             return new CommandResult(1, msg);
         }
@@ -300,6 +319,10 @@ public class AppCommand : ICommand, IArgValidatingCommand
             sb.AppendLine($"    EnableChat: {kv.Value.EnableChat}");
             sb.AppendLine($"    EnableAgent: {kv.Value.EnableAgent}");
             sb.AppendLine($"    MaxIterations: {kv.Value.MaxIterations}");
+            sb.AppendLine($"    MaxContextTokens: {kv.Value.MaxContextTokens}");
+            sb.AppendLine($"    ChatPrompt: {PromptState(kv.Value.ChatPrompt, new AIConfig().ChatPrompt)}");
+            sb.AppendLine($"    AgentPrompt: {PromptState(kv.Value.AgentPrompt, new AIConfig().AgentPrompt)}");
+            sb.AppendLine($"    ContextCompressPrompt: {PromptState(kv.Value.ContextCompressPrompt, AIConfig.DefaultCompressPrompt)}");
         }
 
         sb.AppendLine("ServerPaths:");
@@ -313,6 +336,17 @@ public class AppCommand : ICommand, IArgValidatingCommand
         output?.Write("Command", LogLevel.Success, sb.ToString());
         return new CommandResult(1, sb.ToString());
     }
+
+    /// <summary>
+    /// 判断提示词字段当前使用的是内置默认值还是自定义内容，用于 $app cfg 的紧凑展示。
+    /// </summary>
+    /// <param name="value">配置中的提示词值。</param>
+    /// <param name="builtin">对应的内置默认提示词。</param>
+    /// <returns>“(内置默认)”或“(已自定义)”。</returns>
+    private static string PromptState(string value, string builtin)
+        => string.IsNullOrWhiteSpace(value) || string.Equals(value, builtin, StringComparison.Ordinal)
+            ? "(内置默认)"
+            : "(已自定义)";
 
     /// <summary>
     /// 输出错误信息并构造失败结果。
@@ -331,13 +365,14 @@ public class AppCommand : ICommand, IArgValidatingCommand
     /// </summary>
     /// <returns>用法说明。</returns>
     private static string Help() =>
-        "用法: $app <动作> ...\n" +
-        "  cfg get [路径]              读取应用配置；省略路径输出全部\n" +
+        "用法: $app <动作> ...（高危 / 大权限操作，也是访问任意配置的第二路径）\n" +
+        "  exec <命令/脚本路径> [参数...]   执行系统命令或脚本（代理调用时每次都需确认）\n" +
+        "  cfg get [路径]              读取任意应用配置；省略路径输出全部 JSON\n" +
         "  cfg getall                  输出全部配置\n" +
-        "  cfg set <路径> <值>         写入配置（路径中间的字典键会自动创建）\n" +
+        "  cfg set <路径> <值>         写入任意配置（路径中间的字典键会自动创建）\n" +
         "  cfg rm <路径>               删除字典条目，如 ServerPaths.tga\n" +
         "  exit                        退出程序（先停止所有服务器）\n" +
-        "  reload                      重新加载配置文件并重建服务器列表\n" +
+        "  reload                      重新加载配置文件并重建服务器列表与 AI 实例\n" +
         "  ptcfg                       打印当前配置（调试用）\n" +
-        "用 $help $app 查看详细说明。";
+        "日常配置请优先用 $ai（AI 相关）与 $server（服务器相关）；用 $help $app 查看详细说明。";
 }

@@ -75,7 +75,7 @@ internal static class ServerCheckHandler
 
         foreach (var server in servers)
         {
-            var result = CheckList(server, name, list.FileName, list.ListType, out var isFound, out var text);
+            var result = CheckList(server, name, list.FileName, list.ListType, output, out var isFound, out var text);
             if (result != null) return result;
             if (isFound) anyFound = true;
             allOutput.Add(text!);
@@ -98,6 +98,7 @@ internal static class ServerCheckHandler
     /// <param name="name">要检查的名称，为 null 时输出完整列表。</param>
     /// <param name="fileName">名单文件名。</param>
     /// <param name="listType">名单类型的中文名称。</param>
+    /// <param name="output">输出写入器，用于在读取失败时给出可见的错误信息。</param>
     /// <param name="found">目标是否命中。</param>
     /// <param name="text">输出文本。</param>
     /// <returns>出错时返回失败结果；正常时返回 null。</returns>
@@ -106,6 +107,7 @@ internal static class ServerCheckHandler
         string? name,
         string fileName,
         string listType,
+        IOutputWriter? output,
         out bool found,
         out string? text)
     {
@@ -165,7 +167,9 @@ internal static class ServerCheckHandler
         }
         catch (Exception ex)
         {
-            return Fail(null, $"读取 {fileName} 失败: {ex.Message}");
+            // 必须把 output 传进去：Program 不会打印 CommandResult.Output，
+            // 传 null 会让“名单文件损坏”这类错误完全静默
+            return Fail(output, $"读取 {fileName} 失败: {ex.Message}");
         }
     }
 

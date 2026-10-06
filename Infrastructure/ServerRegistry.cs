@@ -9,8 +9,12 @@ namespace MSL_CLI.Infrastructure;
 /// </summary>
 public class ServerRegistry : IServerRegistry, IDisposable
 {
-    // 服务器字典，键为服务器名称
-    private readonly Dictionary<string, IServer> _servers = new();
+    /// <summary>
+    /// 服务器字典，键为服务器名称。
+    /// 采用“构建新字典后整体发布”的方式更新：读者（输出泵、状态查询、代理校验）
+    /// 永远看到一份完整且不再变动的快照，避免遍历时被 <see cref="Reload"/> 修改而抛异常。
+    /// </summary>
+    private volatile Dictionary<string, IServer> _servers = new(StringComparer.Ordinal);
     // 当前高亮（选中）的服务器名称
     private string? _highlighted;
     // 控制台输出写入器
@@ -19,8 +23,11 @@ public class ServerRegistry : IServerRegistry, IDisposable
     private readonly IServiceProvider _serviceProvider;
     // AI 服务的惰性工厂
     private readonly Func<IAgentService> _agentServiceFactory;
-    // 全局应用配置
-    private readonly AppConfig _appConfig;
+
+    // 隐藏输出名单的短时缓存（避免每条服务器输出都读一次配置文件）
+    private readonly Lock _hiddenCacheLock = new();
+    private List<string>? _hiddenCache;
+    private DateTime _hiddenCacheExpiry = DateTime.MinValue;
 
     /// <summary>
     /// 根据配置创建服务器注册表，并为每个服务器路径创建对应的 ServerManager。
@@ -41,7 +48,7 @@ public class ServerRegistry : IServerRegistry, IDisposable
         _output = output;
         _serviceProvider = serviceProvider;
         _agentServiceFactory = agentServiceFactory;
-        _appConfig = config;    // 保存用于重建
+        var servers = new Dictionary<string, IServer>(StringComparer.Ordinal);
         foreach (var kv in config.ServerPaths)
         {
             var sm = new ServerManager(
@@ -51,9 +58,37 @@ public class ServerRegistry : IServerRegistry, IDisposable
                 CreateProcess(),
                 agentServiceFactory,
                 config,
-                GetPermissionGateway);
-            _servers[kv.Key] = sm;
+                GetPermissionGateway,
+                IsOutputHidden);
+            servers[kv.Key] = sm;
         }
+        _servers = servers;
+    }
+
+    /// <summary>
+    /// 判断服务器输出是否在控制台隐藏（<c>$server hd/uhd</c>）。
+    /// 每次输出都会调用本方法，若每次都读盘会变成日志热路径上的同步文件 IO，
+    /// 因此这里缓存隐藏名单 1 秒（对“开关立即生效”的体感没有影响）。
+    /// </summary>
+    /// <param name="name">服务器名。</param>
+    /// <returns>隐藏时返回 true。</returns>
+    private bool IsOutputHidden(string name)
+    {
+        if (_serviceProvider.GetService(typeof(IConfigurationStore)) is not IConfigurationStore store)
+            return false;
+
+        List<string> hidden;
+        lock (_hiddenCacheLock)
+        {
+            if (_hiddenCache == null || DateTime.UtcNow >= _hiddenCacheExpiry)
+            {
+                _hiddenCache = store.LoadConfig().HiddenServers.ToList();
+                _hiddenCacheExpiry = DateTime.UtcNow.AddSeconds(1);
+            }
+            hidden = _hiddenCache;
+        }
+
+        return hidden.Any(n => string.Equals(n, name, StringComparison.OrdinalIgnoreCase));
     }
 
     // 每个服务器拥有独立的进程实例，避免多个服务器共享同一个进程/输出事件
@@ -76,13 +111,18 @@ public class ServerRegistry : IServerRegistry, IDisposable
     {
         var oldServers = _servers.Values.ToList();
         var currentRunning = oldServers.Where(s => s.Status == ServerStatus.Running).ToDictionary(s => s.Name);
-        _servers.Clear();
+
+        // 先在新字典上完成全部改写，最后一次性发布
+        var servers = new Dictionary<string, IServer>(StringComparer.Ordinal);
         foreach (var kv in newConfig.ServerPaths)
         {
             IServer sm;
             if (currentRunning.TryGetValue(kv.Key, out var runningServer))
             {
                 sm = runningServer;
+                // 复用运行中的实例时必须刷新其配置引用，
+                // 否则它仍会用旧的 DefaultAIConfig 处理玩家触发的 AI 请求
+                if (sm is ServerManager manager) manager.UpdateAppConfig(newConfig);
             }
             else
             {
@@ -93,17 +133,22 @@ public class ServerRegistry : IServerRegistry, IDisposable
                     CreateProcess(),
                     _agentServiceFactory,
                     newConfig,
-                    GetPermissionGateway);
+                    GetPermissionGateway,
+                    IsOutputHidden);
             }
-            _servers[kv.Key] = sm;
+            servers[kv.Key] = sm;
         }
-        // 释放被移除且不再复用的服务器（含其进程句柄）
+
+        _servers = servers;
+
+        // 释放被移除且不再复用的服务器（含其进程句柄；仍有进程在跑时会先终止进程树）
         foreach (var old in oldServers)
         {
-            if (!_servers.Values.Contains(old) && old is IDisposable d)
+            if (!servers.ContainsValue(old) && old is IDisposable d)
                 d.Dispose();
         }
-        if (_highlighted != null && !_servers.ContainsKey(_highlighted))
+
+        if (_highlighted != null && !servers.ContainsKey(_highlighted))
             _highlighted = null;
     }
 
@@ -156,25 +201,12 @@ public class ServerRegistry : IServerRegistry, IDisposable
             await s.StopAsync(false);
     }
 
-    // 从配置构建服务器字典
-    private void BuildFromConfig(AppConfig config)
-    {
-        _servers.Clear();
-        foreach (var kv in config.ServerPaths)
-        {
-            var sm = new ServerManager(kv.Key, kv.Value, _output, CreateProcess(), _agentServiceFactory, config, GetPermissionGateway);
-            _servers[kv.Key] = sm;
-        }
-        // 如果当前高亮服务器不存在，重置
-        if (_highlighted != null && !_servers.ContainsKey(_highlighted))
-            _highlighted = null;
-    }
-
     // 程序退出时由 DI 容器调用，释放所有服务器及其进程句柄
     public void Dispose()
     {
-        foreach (var s in _servers.Values)
+        var servers = _servers;
+        _servers = new Dictionary<string, IServer>(StringComparer.Ordinal);
+        foreach (var s in servers.Values)
             (s as IDisposable)?.Dispose();
-        _servers.Clear();
     }
 }

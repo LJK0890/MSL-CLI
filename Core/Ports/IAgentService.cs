@@ -6,6 +6,12 @@ using MSL_CLI.Core.Ports;
 public interface IAgentService
 {
     /// <summary>
+    /// 当前已登记的 AI 配置名集合（随 <see cref="ReloadConfig"/> 一起热更新）。
+    /// 供游戏内 <c>$chat [配置名] 消息</c> 这类“配置名可选”的语法判定首个词究竟是不是配置名。
+    /// </summary>
+    IReadOnlyCollection<string> ConfigNames { get; }
+
+    /// <summary>
     /// 以聊天模式向指定 AI 配置发送消息并获取回复。
     /// </summary>
     /// <param name="configName">AI 配置名称。</param>
@@ -28,4 +34,11 @@ public interface IAgentService
         string configName,
         string instruction,
         (IServer, string)? source = null);   // 新增可选参数
+
+    /// <summary>
+    /// 用新的应用配置替换内存中的 AI 实例集合，
+    /// 使 $ai add / $ai rm、$app cfg 修改、$app reload 等操作无需重启即可生效。
+    /// </summary>
+    /// <param name="newConfig">新的应用配置。</param>
+    void ReloadConfig(MSL_CLI.Core.Domain.AppConfig newConfig);
 }

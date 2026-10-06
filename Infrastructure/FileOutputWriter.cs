@@ -49,7 +49,7 @@ public class FileOutputWriter : IOutputWriter, IDisposable
         var appData = Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData);
         var dir = Path.Combine(appData, appName);
         Directory.CreateDirectory(dir);
-        _logFilePath = Path.Combine(dir, $"Log-{DateTime.Now:yyyy-MM-dd-HH-mm-ss}.txt");
+        _logFilePath = Path.Combine(dir, $"Log-{DateTime.Now.ToString("yyyy-MM-dd-HH-mm-ss", System.Globalization.CultureInfo.InvariantCulture)}.txt");
         _writerTask = Task.Run(ProcessQueue);
     }
 
@@ -62,15 +62,24 @@ public class FileOutputWriter : IOutputWriter, IDisposable
     /// <param name="includeTimestamp">是否记录时间戳，默认记录。</param>
     public void Write(string context, LogLevel level, string message, bool includeTimestamp = true)
     {
-        // 已释放后忽略新的写入请求
+        // 已释放后忽略新的写入请求。
+        // 这里用 TryAdd 而不是 Add：Dispose 可能刚刚释放队列，
+        // Add 会抛 ObjectDisposedException —— 而写入日志是“绝不能抛异常”的路径
+        // （它可能运行在进程输出事件线程上，异常会直接终止进程）。
         if (_disposed) return;
-        _queue.Add(new LogEntry
+
+        try
         {
-            Context = context,
-            Level = level,
-            Message = message,
-            Timestamp = includeTimestamp ? DateTime.Now : null
-        });
+            _queue.TryAdd(new LogEntry
+            {
+                Context = context,
+                Level = level,
+                Message = message,
+                Timestamp = includeTimestamp ? DateTime.Now : null
+            });
+        }
+        catch (ObjectDisposedException) { /* 与 Dispose 竞争，丢弃本条日志 */ }
+        catch (InvalidOperationException) { /* 队列已完成添加，丢弃本条日志 */ }
     }
 
     /// <summary>
@@ -83,14 +92,23 @@ public class FileOutputWriter : IOutputWriter, IDisposable
         {
             foreach (var entry in _queue.GetConsumingEnumerable(_cts.Token))
             {
-                var line = FormatEntry(entry);
-                await File.AppendAllTextAsync(_logFilePath, line + Environment.NewLine, Encoding.UTF8, _cts.Token);
+                // 单条写入失败不能让整个消费者退出：否则本次会话后续的所有日志都会被静默丢弃
+                try
+                {
+                    var line = FormatEntry(entry);
+                    await File.AppendAllTextAsync(_logFilePath, line + Environment.NewLine, Encoding.UTF8, _cts.Token);
+                }
+                catch (OperationCanceledException) { throw; }
+                catch
+                {
+                    // 忽略单条日志的写入失败（例如日志文件被占用），继续处理后续日志
+                }
             }
         }
         catch (OperationCanceledException) { }
         catch (Exception)
         {
-            // 写日志失败，但无法再记录，忽略
+            // 取队列本身失败，但无法再记录，忽略
         }
         finally
         {
@@ -115,7 +133,8 @@ public class FileOutputWriter : IOutputWriter, IDisposable
     private string FormatEntry(LogEntry entry)
     {
         // 无时间戳时回退为当前时间；Debug 级别以 "DEBUG" 文本展示
-        var timestamp = entry.Timestamp?.ToString("HH:mm:ss") ?? DateTime.Now.ToString("HH:mm:ss");
+        var timestamp = entry.Timestamp?.ToString("HH:mm:ss", System.Globalization.CultureInfo.InvariantCulture)
+                        ?? DateTime.Now.ToString("HH:mm:ss", System.Globalization.CultureInfo.InvariantCulture);
         var levelStr = entry.Level != LogLevel.Debug ? entry.Level.ToString() : "DEBUG";
         return $"[{entry.Context}/{levelStr}] [{timestamp}] {entry.Message}";
     }

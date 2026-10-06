@@ -114,7 +114,8 @@ internal static class ServerArgsHandler
             if (!parts[paramIndex + 1].Equals("element", StringComparison.OrdinalIgnoreCase) || parts.Length < paramIndex + 3)
                 return Fail(output, "用法: $server arg get <服务器名|all> <参数> [element <索引>]");
 
-            if (!int.TryParse(parts[paramIndex + 2], out var idx) || idx < 0)
+            if (!int.TryParse(parts[paramIndex + 2], System.Globalization.NumberStyles.Integer,
+                    System.Globalization.CultureInfo.InvariantCulture, out var idx) || idx < 0)
                 return Fail(output, $"无效索引 '{parts[paramIndex + 2]}'，应为从 0 开始的整数");
             elementIndex = idx;
         }
@@ -206,7 +207,9 @@ internal static class ServerArgsHandler
         if (!ServerTargetResolver.IsServer(args, parts[0]))
             return Fail(output, $"未找到服务器 '{parts[0]}'");
 
-        if (!TryMatch(parts[1], ReadableParams, out var param))
+        // 删除时必须精确匹配参数名：放宽成“前缀匹配”会让
+        // "$server arg rm yz jvmArgs-Xmx4G"（漏空格）被当成清空整个 jvmArgs 列表
+        if (!TryMatch(parts[1], ReadableParams, out var param, allowGlued: false))
             return Fail(output, $"无效参数 '{parts[1]}'，允许: {string.Join(", ", ReadableParams)}");
 
         if (!DeletableParams.Contains(param, StringComparer.OrdinalIgnoreCase))
@@ -275,16 +278,25 @@ internal static class ServerArgsHandler
     };
 
     /// <summary>
-    /// 优先按“整个参数名”匹配，其次按参数名前缀匹配，最后忽略大小写匹配。
+    /// 优先按“整个参数名”匹配，其次（可选的）按参数名前缀匹配。
     /// </summary>
     /// <param name="token">用户输入的参数名。</param>
     /// <param name="allowed">允许的参数名。</param>
     /// <param name="matched">匹配到的标准参数名。</param>
+    /// <param name="allowGlued">
+    /// 是否允许“粘连”写法（如 <c>jvmArgs-Xmx4G</c>）；删除类操作必须传 false。
+    /// </param>
     /// <returns>匹配成功返回 true。</returns>
-    private static bool TryMatch(string token, string[] allowed, out string matched)
+    private static bool TryMatch(string token, string[] allowed, out string matched, bool allowGlued = true)
     {
         var exact = allowed.FirstOrDefault(a => a.Equals(token, StringComparison.OrdinalIgnoreCase));
         if (exact != null) { matched = exact; return true; }
+
+        if (!allowGlued)
+        {
+            matched = string.Empty;
+            return false;
+        }
 
         var glued = allowed
             .Where(a => token.StartsWith(a, StringComparison.OrdinalIgnoreCase) && token.Length > a.Length)

@@ -84,11 +84,19 @@ public class AgentPermissionGateway : IAgentPermissionGateway
 
     /// <summary>
     /// 判断命令是否已被白名单覆盖，强制询问命令始终返回 false。
+    /// 这里同样解析出“命令 + 动作”的授权范围，避免只按命令名匹配时
+    /// 被 <c>$server</c> 这类粗粒度白名单条目放行掉强制询问的动作（如 <c>$server del</c>）。
     /// </summary>
     /// <param name="command">完整命令文本。</param>
     /// <returns>命中白名单时返回 true。</returns>
     public bool IsAllowedByPolicy(string command)
-        => GetPermissions().IsAlwaysAllowed(command);
+    {
+        // 命令不存在或参数不合法时一律不放行（不能只因为范围解析失败就退化成“按命令名命中白名单”）
+        var validation = CommandInvocationValidator.Validate(_commandParser, command, BuildValidationContext(command));
+        if (!validation.IsValid) return false;
+
+        return GetPermissions().IsAlwaysAllowed(command, validation.PermissionScope);
+    }
 
     /// <summary>
     /// 就一条命令请求授权。
@@ -109,7 +117,7 @@ public class AgentPermissionGateway : IAgentPermissionGateway
 
         // 兜底防线：不存在的命令一律不提问、不执行，也不会被写入白名单。
         // 正常情况下 AgentService 已提前拦截，这里保证任何调用方都绕不过去。
-        var validation = CommandInvocationValidator.Validate(_commandParser, command);
+        var validation = CommandInvocationValidator.Validate(_commandParser, command, BuildValidationContext(command));
         if (!validation.IsValid)
         {
             _output.Write("AI/Permission", LogLevel.Warning,
@@ -183,7 +191,7 @@ public class AgentPermissionGateway : IAgentPermissionGateway
         AgentPermissions permissions,
         CancellationToken cancellationToken)
     {
-        var forced = permissions.IsAlwaysAsk(command);
+        var forced = permissions.IsAlwaysAsk(command, scope);
 
         _output.Write("AI/Permission", LogLevel.Warning, "=============== 代理请求执行命令 ===============");
         _output.Write("AI/Permission", LogLevel.Warning, $"命令: {command}");
@@ -198,7 +206,8 @@ public class AgentPermissionGateway : IAgentPermissionGateway
             : "是否允许本次执行？[y=允许本次 / a=总是允许 / n=拒绝]");
 
         var raw = await _input.ReadLineAsync(cancellationToken, PromptTimeout);
-        return raw.Trim().ToLowerInvariant();
+        // 契约只保证返回字符串，这里仍按可能为 null 处理，避免超时变成 NRE
+        return (raw ?? string.Empty).Trim().ToLowerInvariant();
     }
 
     /// <summary>
@@ -222,7 +231,7 @@ public class AgentPermissionGateway : IAgentPermissionGateway
         AgentPermissions permissions,
         CancellationToken cancellationToken)
     {
-        var forced = permissions.IsAlwaysAsk(command);
+        var forced = permissions.IsAlwaysAsk(command, scope);
         var key = PromptKey(server.Name, player);
         var pending = new PendingPrompt();
 
@@ -484,11 +493,11 @@ public class AgentPermissionGateway : IAgentPermissionGateway
     /// <summary>
     /// 注册一条会话内一次性放行记录。
     /// </summary>
-    /// <param name="command">已获批准的命令文本；按“命令 + 子动作”范围记录。</param>
+    /// <param name="command">已获批准的命令文本；普通命令按“命令 + 子动作”范围记录，
+    /// 强制逐次询问的命令按完整命令记录。</param>
     public void GrantSessionPass(string command)
     {
-        // 只记“命令 + 子动作”范围：同一范围的不同参数共享一次授权（与白名单粒度一致）
-        var key = ResolveScope(command);
+        var key = ResolveSessionKey(command);
         if (key.Length == 0) return;
 
         lock (_passLock)
@@ -504,7 +513,7 @@ public class AgentPermissionGateway : IAgentPermissionGateway
     /// <returns>成功消费时返回 true。</returns>
     public bool TryConsumeSessionPass(string command)
     {
-        var key = ResolveScope(command);
+        var key = ResolveSessionKey(command);
         if (key.Length == 0) return false;
 
         lock (_passLock)
@@ -522,8 +531,44 @@ public class AgentPermissionGateway : IAgentPermissionGateway
     }
 
     /// <summary>
+    /// 计算会话放行记录的键。
+    /// 普通命令按“命令 + 子动作”范围记录（同一范围的不同参数共享一次授权，与白名单粒度一致）；
+    /// 强制逐次询问的命令（<c>$app exec</c> / <c>$server del</c>）**必须按完整命令匹配**，
+    /// 否则“批准一次 $app exec echo hi”会把“$app exec 任意命令”一起放行，
+    /// 与“每次执行都必须单独确认”的承诺相矛盾。
+    /// </summary>
+    /// <param name="command">完整命令文本。</param>
+    /// <returns>放行记录的键；无法解析时为空字符串。</returns>
+    private string ResolveSessionKey(string command)
+    {
+        var scope = ResolveScope(command);
+        if (scope.Length == 0) return string.Empty;
+
+        return GetPermissions().IsAlwaysAsk(command, scope)
+            ? AgentPermissions.Normalize(command)
+            : scope;
+    }
+
+    /// <summary>
+    /// 构造供命令自行校验参数用的上下文。
+    /// 必须带上服务器注册表：<c>ServerCommand.TryValidateArgs</c> 需要它才能识别
+    /// <c>$server &lt;服务器名&gt; file …</c> 这种“以服务器名开头”的写法；
+    /// 不传上下文会把该写法误判为“未知动作”，导致代理永远无法获得授权。
+    /// </summary>
+    /// <param name="command">完整命令文本。</param>
+    /// <returns>命令参数上下文。</returns>
+    private CommandArgs BuildValidationContext(string command)
+        => new(
+            CommandInvocationValidator.ExtractRawArgs(command),
+            _serverRegistry,
+            null,
+            _configStore)
+        {
+            Parser = _commandParser
+        };
+
+    /// <summary>
     /// 解析命令的授权范围：由命令自己的钩子给出“命令 + 子动作”，否则退化为命令名。
-    /// 命令的参数校验不依赖注册表时无需注入 <see cref="IServerRegistry"/>。
     /// </summary>
     /// <param name="command">完整命令文本。</param>
     /// <returns>授权范围。</returns>
@@ -531,19 +576,5 @@ public class AgentPermissionGateway : IAgentPermissionGateway
         => CommandInvocationValidator.ResolvePermissionScope(
             _commandParser,
             command,
-            new CommandArgs(
-                CommandInvocationValidator.ExtractRawArgs(command),
-                _serverRegistry,
-                null,
-                _configStore)
-            {
-                Parser = _commandParser
-            });
-
-    /// <summary>
-    /// 为 <see cref="IAgentPermissionGateway.GrantSessionPass"/> 计算会话放行的范围键。
-    /// </summary>
-    /// <param name="command">已获批准的命令文本。</param>
-    /// <returns>授权范围。</returns>
-    public string GetScopeKey(string command) => ResolveScope(command);
+            BuildValidationContext(command));
 }

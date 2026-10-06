@@ -9,7 +9,7 @@ namespace MSL_CLI.CLI;
 /// 当有组件通过 <see cref="ReadLineAsync"/> 请求独占输入时，该行会作为交互应答回传，
 /// 而不会触发 <see cref="OnInputReceived"/>；否则该行照常触发命令事件。
 /// </summary>
-public class ConsoleInputReader : IInputReader
+public class ConsoleInputReader : IInputReader, IDisposable
 {
     // 存放控制台输入行的线程安全阻塞队列
     private readonly BlockingCollection<string> _queue = new();
@@ -21,6 +21,10 @@ public class ConsoleInputReader : IInputReader
     private readonly Thread _readerThread;
     // 运行标志，置为 false 时读取循环退出
     private volatile bool _running = true;
+    // 是否已释放
+    private bool _disposed;
+    // 是否已停止读取（StopReading 幂等）
+    private bool _stopped;
 
     // 保护 _interactive 的同步锁，确保同一时刻只有一个交互请求处于挂起状态
     private readonly object _interactiveLock = new();
@@ -61,8 +65,11 @@ public class ConsoleInputReader : IInputReader
     /// </summary>
     public void StopReading()
     {
+        if (_stopped) return;
+        _stopped = true;
+
         _running = false;
-        _queue.CompleteAdding();
+        try { _queue.CompleteAdding(); } catch (ObjectDisposedException) { return; }
         _cts.Cancel();
         // 唤醒仍在等待交互应答的调用方，避免其永久阻塞
         lock (_interactiveLock)
@@ -148,14 +155,16 @@ public class ConsoleInputReader : IInputReader
         {
             foreach (var line in _queue.GetConsumingEnumerable(_cts.Token))
             {
-                TaskCompletionSource<string>? waiter;
+                var dispatched = false;
                 lock (_interactiveLock)
                 {
-                    waiter = _interactive;
+                    // 必须在同一把锁内完成投递：否则“超时释放槽位 → 新提问装上新的 waiter”
+                    // 之间到达的这一行会被当作控制台命令派发，而它其实是上一条提问的作答
+                    if (_interactive != null && _interactive.TrySetResult(line))
+                        dispatched = true;
                 }
 
-                // 有组件正在等待应答时，本行属于该交互，不再当作命令处理
-                if (waiter != null && waiter.TrySetResult(line))
+                if (dispatched)
                     continue;
 
                 OnInputReceived?.Invoke(this, line);
@@ -166,5 +175,18 @@ public class ConsoleInputReader : IInputReader
         {
             Console.WriteLine($"输入队列处理异常: {ex.Message}");
         }
+    }
+
+    /// <summary>
+    /// 释放输入读取器：停止读取线程并释放队列与取消令牌源。
+    /// </summary>
+    public void Dispose()
+    {
+        if (_disposed) return;
+        _disposed = true;
+
+        try { StopReading(); } catch { /* 忽略停止异常 */ }
+        try { _queue.Dispose(); } catch { /* 忽略释放异常 */ }
+        try { _cts.Dispose(); } catch { /* 忽略释放异常 */ }
     }
 }

@@ -28,8 +28,10 @@ public class ServerManager : IServer, IDisposable
     private readonly Func<IAgentService> _agentServiceFactory;
     // 授权网关的惰性工厂：用于把玩家的授权作答路由到对应提问
     private readonly Func<IAgentPermissionGateway>? _permissionGatewayFactory;
-    // 全局应用配置
-    private readonly AppConfig _appConfig;
+    // 全局应用配置（可通过 UpdateAppConfig 热更新）
+    private AppConfig _appConfig;
+    // 判断服务器输出是否在控制台隐藏（$server hd/uhd），每次输出时实时查询
+    private readonly Func<string, bool>? _isOutputHidden;
     // 当前运行状态
     private ServerStatus _status = ServerStatus.Stopped;
     // 服务器输出缓冲区
@@ -38,6 +40,26 @@ public class ServerManager : IServer, IDisposable
     private readonly Lock _statusLock = new();
     // 保护缓冲区访问的锁
     private readonly Lock _bufferLock = new();
+
+    /// <summary>输出缓冲区保留的最大字符数；超出后丢弃最旧的内容。</summary>
+    private const int MaxBufferChars = 512 * 1024;
+
+    /// <summary>
+    /// 把缓冲区裁剪到 <see cref="MaxBufferChars"/> 以内（保留最新的内容）。
+    /// 缓冲区原本无上限，长期运行且没有 <c>$server buf update</c> 时会持续吃内存。
+    /// 调用方必须已持有 <see cref="_bufferLock"/>。
+    /// </summary>
+    private void TrimBuffer()
+    {
+        if (_buffer.Length <= MaxBufferChars) return;
+
+        var overflow = _buffer.Length - MaxBufferChars;
+        // 尽量从换行处开始裁剪，避免留下半行
+        var text = _buffer.ToString();
+        var cut = text.IndexOf('\n', overflow);
+        _buffer.Clear();
+        _buffer.Append(text.AsSpan(cut >= 0 ? cut + 1 : overflow));
+    }
 
     /// <summary>
     /// 服务器名称。
@@ -75,6 +97,10 @@ public class ServerManager : IServer, IDisposable
     /// 可选的授权网关工厂。使用工厂而非直接注入，是为了避免
     /// “注册表 → 服务器 → 网关 → 注册表”的构造循环，只有真正需要路由玩家作答时才解析。
     /// </param>
+    /// <param name="isOutputHidden">
+    /// 可选的“输出是否在控制台隐藏”判定（对应 <c>$server hd/uhd</c>）。
+    /// 每次输出时实时查询，因此开关立即生效，无需重建服务器实例。
+    /// </param>
     public ServerManager(
         string name,
         string path,
@@ -82,7 +108,8 @@ public class ServerManager : IServer, IDisposable
         IServerProcess process,
         Func<IAgentService> agentServiceFactory,
         AppConfig appConfig,
-        Func<IAgentPermissionGateway>? permissionGatewayFactory = null)
+        Func<IAgentPermissionGateway>? permissionGatewayFactory = null,
+        Func<string, bool>? isOutputHidden = null)
     {
         _name = name;
         _path = path;
@@ -91,6 +118,7 @@ public class ServerManager : IServer, IDisposable
         _agentServiceFactory = agentServiceFactory;
         _appConfig = appConfig;
         _permissionGatewayFactory = permissionGatewayFactory;
+        _isOutputHidden = isOutputHidden;
         _properties = new ServerProperties(System.IO.Path.Combine(path, "server.properties"), output);
         _argument = new ServerArgument(name, path, output);
         _process.OutputReceived += OnOutputReceived;
@@ -112,10 +140,36 @@ public class ServerManager : IServer, IDisposable
             _status = ServerStatus.Starting;
         }
         _output.Write(_name, LogLevel.Info, "正在启动...");
-        _process.Start(_argument.JavaPath, _argument.GetJavaArgs(), _path);
-        // 短暂等待进程启动完成后置为 Running
+        try
+        {
+            _process.Start(_argument.JavaPath, _argument.GetJavaArgs(), _path);
+        }
+        catch
+        {
+            // 启动失败必须把状态退回 Stopped，否则会永久卡在 Starting：
+            // 既不能再启动（状态不是 Stopped），也无法正常停止
+            lock (_statusLock) _status = ServerStatus.Stopped;
+            throw;
+        }
+
+        // 短暂等待进程启动完成后置为 Running。
+        // 必须确认进程这一秒内没有退出：若已崩溃（缺 jar、端口占用等），
+        // Exited 回调已经把状态置回 Stopped，这里再无条件写成 Running 会得到一个“僵尸 Running”，
+        // 导致 send 假成功、stop -f 抛异常、注册表复用死实例。
         await Task.Delay(1000);
-        lock (_statusLock) _status = ServerStatus.Running;
+
+        var exited = _process.HasExited;
+        lock (_statusLock)
+        {
+            _status = exited ? ServerStatus.Stopped : ServerStatus.Running;
+        }
+
+        if (exited)
+        {
+            _output.Write(_name, LogLevel.Error, "启动失败：进程已退出（请检查启动参数与服务器日志）");
+            return;
+        }
+
         _output.Write(_name, LogLevel.Success, "已启动");
     }
 
@@ -131,24 +185,33 @@ public class ServerManager : IServer, IDisposable
             _status = ServerStatus.Stopping;
         }
         _output.Write(_name, LogLevel.Info, "正在停止...");
-        if (!force)
+        try
         {
-            // 优雅停止：发送 stop 命令并等待最多 30 秒
-            await _process.WriteStandardInputAsync("stop");
-            bool exited = await _process.WaitForExitAsync(30000);
-            if (!exited)
+            if (!force)
             {
-                // 超时未退出则强制终止进程树
-                _output.Write(_name, LogLevel.Warning, "超时，强制终止");
+                // 优雅停止：发送 stop 命令并等待最多 30 秒
+                await _process.WriteStandardInputAsync("stop");
+                bool exited = await _process.WaitForExitAsync(30000);
+                if (!exited)
+                {
+                    // 超时未退出则强制终止进程树
+                    _output.Write(_name, LogLevel.Warning, "超时，强制终止");
+                    _process.Kill(true);
+                }
+            }
+            else
+            {
+                // 强制模式：直接终止整个进程树
                 _process.Kill(true);
             }
         }
-        else
+        finally
         {
-            // 强制模式：直接终止整个进程树
-            _process.Kill(true);
+            // 无论停止过程中发生什么（管道断开、进程已消失等）都必须落回 Stopped，
+            // 否则状态会永久停在 Stopping，之后既不能启动也不能再次停止
+            lock (_statusLock) _status = ServerStatus.Stopped;
         }
-        lock (_statusLock) _status = ServerStatus.Stopped;
+
         _output.Write(_name, LogLevel.Success, "已停止");
     }
 
@@ -189,9 +252,9 @@ public class ServerManager : IServer, IDisposable
                 ["version"] = full.Version ?? "",
                 ["game_type"] = full.GameType ?? "",
                 ["map"] = full.Map ?? "",
-                ["numplayers"] = full.NumPlayers.ToString(),
-                ["maxplayers"] = full.MaxPlayers.ToString(),
-                ["hostport"] = full.HostPort.ToString(),
+                ["numplayers"] = full.NumPlayers.ToString(System.Globalization.CultureInfo.InvariantCulture),
+                ["maxplayers"] = full.MaxPlayers.ToString(System.Globalization.CultureInfo.InvariantCulture),
+                ["hostport"] = full.HostPort.ToString(System.Globalization.CultureInfo.InvariantCulture),
                 ["hostip"] = full.HostIp ?? "",
                 ["players"] = string.Join(", ", full.PlayerList)
             };
@@ -237,12 +300,29 @@ public class ServerManager : IServer, IDisposable
     }
 
     /// <summary>
-    /// 释放服务器进程资源。
+    /// 释放服务器进程资源。仍在运行时先强制终止进程树，避免配置变更/退出时留下孤儿 java 进程。
     /// </summary>
     public void Dispose()
     {
+        if (Status != ServerStatus.Stopped)
+        {
+            try { _process.Kill(true); } catch { /* 忽略终止异常 */ }
+            lock (_statusLock) _status = ServerStatus.Stopped;
+        }
+
         try { _process.Dispose(); }
         catch { /* 忽略释放异常 */ }
+    }
+
+    /// <summary>
+    /// 更新该实例持有的全局配置引用。
+    /// 运行中的服务器会在 <see cref="ServerRegistry.Reload"/> 中被复用，
+    /// 若不刷新这里，玩家触发的 AI 仍会使用旧的 <c>DefaultAIConfig</c>。
+    /// </summary>
+    /// <param name="config">新的全局配置。</param>
+    public void UpdateAppConfig(AppConfig config)
+    {
+        if (config != null) _appConfig = config;
     }
 
     // ---------- AI 命令解析与处理 ----------
@@ -315,7 +395,10 @@ public class ServerManager : IServer, IDisposable
                 // 已作为授权作答消费，不再当作 AI 命令
             }
             else if (MinecraftChatParser.CountAngleBracketPairs(chat.Message) <= 1 &&
-                     MinecraftChatParser.TryParseAiCommand(chat.Message, out var trigger))
+                     MinecraftChatParser.TryParseAiCommand(
+                         chat.Message,
+                         () => _agentServiceFactory().ConfigNames,
+                         out var trigger))
             {
                 _ = Task.Run(() => HandleAICommandAsync(trigger.ConfigName, trigger.IsAgent, trigger.Content, chat.Player));
             }
@@ -339,7 +422,11 @@ public class ServerManager : IServer, IDisposable
         lock (_bufferLock)
         {
             _buffer.AppendLine(data);
+            TrimBuffer();
         }
-        _output.Write($"{_name}/OUT", level, data, false);
+
+        // 控制台隐藏的服务器：只入缓冲区（$server buf read / AI 仍可读），不再写控制台与日志
+        if (_isOutputHidden?.Invoke(_name) != true)
+            _output.Write($"{_name}/OUT", level, data, false);
     }
 }

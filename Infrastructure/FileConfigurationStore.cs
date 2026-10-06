@@ -28,6 +28,11 @@ public class FileConfigurationStore : IConfigurationStore
     private readonly IOutputWriter? _output; // 可选注入
 
     /// <summary>
+    /// 保护配置文件写入的锁，避免并发保存互相覆盖同一个临时文件。
+    /// </summary>
+    private readonly Lock _saveLock = new();
+
+    /// <summary>
     /// 最近一次加载过程中发生的错误描述；为 null 表示加载成功（或文件不存在）。
     /// </summary>
     public string? LastLoadError { get; private set; }
@@ -206,23 +211,66 @@ public class FileConfigurationStore : IConfigurationStore
             config.ServerPaths.Remove(key!);
         }
 
+        // 锁定 / 隐藏列表：去空白、去重，并丢弃已不存在的服务器名，
+        // 避免残留条目把“重新登记的同名服务器”意外锁住或隐藏
+        config.LockedServers = NormalizeServerNames(config.LockedServers, config.ServerPaths);
+        config.HiddenServers = NormalizeServerNames(config.HiddenServers, config.ServerPaths);
+
         config.AgentPermissions ??= new AgentPermissions();
         config.AgentPermissions.AllowList ??= new List<string>();
         config.AgentPermissions.AlwaysAskCommands ??= new List<string>();
 
-        // 先剔除空白项，避免无效条目影响后续判断
-        config.AgentPermissions.AllowList.RemoveAll(string.IsNullOrWhiteSpace);
-        config.AgentPermissions.AlwaysAskCommands.RemoveAll(string.IsNullOrWhiteSpace);
+        // 先统一规范化（去首尾空白、合并内部连续空白）并去重，
+        // 使 " $server   ck op " 与 "$server ck op" 被当作同一条目
+        config.AgentPermissions.AllowList = NormalizeEntries(config.AgentPermissions.AllowList);
+        config.AgentPermissions.AlwaysAskCommands = NormalizeEntries(config.AgentPermissions.AlwaysAskCommands);
 
-        // $exec 是始终必须人工确认的底线，任何配置都不能把它移出强制询问列表
-        if (!config.AgentPermissions.AlwaysAskCommands.Any(
-                c => string.Equals(c.Trim(), "$exec", StringComparison.OrdinalIgnoreCase)))
+        // 历史条目迁移：$exec 已搬到 $app exec，旧配置里残留的条目自动改写
+        for (var i = 0; i < config.AgentPermissions.AlwaysAskCommands.Count; i++)
         {
-            config.AgentPermissions.AlwaysAskCommands.Add("$exec");
+            if (string.Equals(config.AgentPermissions.AlwaysAskCommands[i], "$exec", StringComparison.OrdinalIgnoreCase))
+                config.AgentPermissions.AlwaysAskCommands[i] = "$app exec";
+        }
+
+        config.AgentPermissions.AlwaysAskCommands =
+            NormalizeEntries(config.AgentPermissions.AlwaysAskCommands);
+
+        // 底线条目（执行系统命令、删除服务器目录）任何配置都不能把它们移出强制询问列表
+        foreach (var forced in AgentPermissions.ForcedAlwaysAsk)
+        {
+            if (!config.AgentPermissions.AlwaysAskCommands.Contains(forced, StringComparer.OrdinalIgnoreCase))
+                config.AgentPermissions.AlwaysAskCommands.Add(forced);
         }
 
         config.DefaultAIConfig ??= string.Empty;
     }
+
+    /// <summary>
+    /// 规范化“服务器名列表”（锁定 / 隐藏）：去空白、忽略大小写去重，
+    /// 并丢弃已不在 <paramref name="serverPaths"/> 中的名字。
+    /// </summary>
+    /// <param name="items">原始列表，可为 null。</param>
+    /// <param name="serverPaths">当前已登记的服务器路径表。</param>
+    /// <returns>规范化后的新列表。</returns>
+    private static List<string> NormalizeServerNames(List<string>? items, Dictionary<string, string> serverPaths)
+        => (items ?? new List<string>())
+            .Select(s => s?.Trim() ?? string.Empty)
+            // 名称比较忽略大小写：手写的 "Survival" 也要能匹配 ServerPaths 里的 "survival"
+            .Where(s => s.Length > 0 &&
+                        serverPaths.Keys.Any(k => string.Equals(k, s, StringComparison.OrdinalIgnoreCase)))
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .ToList();
+
+    /// <summary>
+    /// 规范化字符串列表：逐项去首尾空白并合并内部连续空白，剔除空项并按忽略大小写去重。
+    /// </summary>
+    /// <param name="items">原始列表。</param>
+    /// <returns>规范化后的新列表。</returns>
+    private static List<string> NormalizeEntries(List<string> items)
+        => items.Select(AgentPermissions.Normalize)
+            .Where(s => s.Length > 0)
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .ToList();
 
     /// <summary>
     /// 从最近一次保存前生成的备份恢复用户配置。
@@ -253,36 +301,41 @@ public class FileConfigurationStore : IConfigurationStore
     {
         if (config == null) throw new ArgumentNullException(nameof(config));
 
-        // 保存前规范化，防止把 null 集合写入文件
-        Normalize(config);
-
-        var json = JsonSerializer.Serialize(config, WriteOptions);
-        var tempPath = _userConfigPath + ".tmp";
-
-        // 1. 写入临时文件（同一目录，保证后续替换是原子操作）
-        File.WriteAllText(tempPath, json);
-
-        try
+        lock (_saveLock)
         {
-            if (File.Exists(_userConfigPath))
-            {
-                // 2. 覆盖前先备份现有配置，便于用户回滚
-                File.Copy(_userConfigPath, _userConfigPath + ".bak", overwrite: true);
+            // 保存前规范化，防止把 null 集合写入文件
+            Normalize(config);
 
-                // 3. 原子替换：目标存在时必须提供备份文件名参数，实际备份用 File.Copy 完成
-                File.Replace(tempPath, _userConfigPath, null, ignoreMetadataErrors: true);
-            }
-            else
+            var json = JsonSerializer.Serialize(config, WriteOptions);
+            // 临时文件名必须唯一：控制台命令与代理授权可能并发保存，
+            // 共用固定的 .tmp 会让两个线程互相覆盖/删除对方的临时文件
+            var tempPath = $"{_userConfigPath}.{Guid.NewGuid():N}.tmp";
+
+            try
             {
-                // 首次保存直接落盘
-                File.Move(tempPath, _userConfigPath);
+                // 1. 写入临时文件（同一目录，保证后续替换是原子操作）
+                File.WriteAllText(tempPath, json);
+
+                if (File.Exists(_userConfigPath))
+                {
+                    // 2. 覆盖前先备份现有配置，便于用户回滚
+                    File.Copy(_userConfigPath, _userConfigPath + ".bak", overwrite: true);
+
+                    // 3. 原子替换：目标存在时必须提供备份文件名参数，实际备份用 File.Copy 完成
+                    File.Replace(tempPath, _userConfigPath, null, ignoreMetadataErrors: true);
+                }
+                else
+                {
+                    // 首次保存直接落盘
+                    File.Move(tempPath, _userConfigPath);
+                }
             }
-        }
-        catch
-        {
-            // 写入失败时清理临时文件，避免残留干扰下次保存
-            try { if (File.Exists(tempPath)) File.Delete(tempPath); } catch { }
-            throw;
+            catch
+            {
+                // 写入失败时清理临时文件，避免残留干扰下次保存
+                try { if (File.Exists(tempPath)) File.Delete(tempPath); } catch { }
+                throw;
+            }
         }
     }
 }

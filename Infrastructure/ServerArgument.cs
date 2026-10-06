@@ -56,8 +56,14 @@ public class ServerArgument
         _serverName = serverName;
         _serverPath = serverPath;
         _output = output;
-        Parse();
-        SaveToScript();
+
+        // 脚本存在但识别不出启动行时不改写文件：否则会把用户自定义的启动脚本
+        // 覆盖成默认的 "java @user_jvm_args.txt ..."，javaPath 也就此丢失
+        if (Parse())
+            SaveToScript();
+        else
+            _output.Write(_serverName, LogLevel.Warning,
+                "启动脚本中未识别出启动行，已保持原样未改写；如需重建请用 $server arg set <服务器> javaPath <路径>");
     }
 
     // ---------- 启动脚本路径 ----------
@@ -75,45 +81,46 @@ public class ServerArgument
     /// 解析启动脚本，填充 javaPath / jvmArgs / jarArgs / appendArgs。
     /// 解析失败的部分使用默认值，保证对象始终可用。
     /// </summary>
-    private void Parse()
+    /// <returns>
+    /// 脚本不存在（按默认值生成）或成功解析出启动行时返回 true；
+    /// 脚本存在但识别不出启动行时返回 false（调用方据此避免改写原文件）。
+    /// </returns>
+    private bool Parse()
     {
         if (!File.Exists(RunScriptPath))
         {
             _output.Write(_serverName, LogLevel.Warning, "启动脚本不存在，使用默认参数");
             _jvmArgs.AddRange(DefaultJvmArgs);
             _appendArgs.AddRange(DefaultAppendArgs);
-            return;
+            return true;
         }
 
         // 1. 读取 user_jvm_args.txt 作为 JVM 参数的权威来源
         var fileJvmArgs = ReadJvmArgsFile();
 
         // 2. 找到启动命令行
-        var startLine = File.ReadAllLines(RunScriptPath, Encoding.UTF8)
-            .Select(l => l.Trim())
-            .FirstOrDefault(l => l.StartsWith('"') || l.StartsWith("java"));
+        var startLine = FindStartLine(File.ReadAllLines(RunScriptPath, Encoding.UTF8));
 
         if (string.IsNullOrEmpty(startLine))
         {
             _output.Write(_serverName, LogLevel.Warning, "未找到启动行，使用默认参数");
             _jvmArgs.AddRange(fileJvmArgs.Count > 0 ? fileJvmArgs : DefaultJvmArgs);
             _appendArgs.AddRange(DefaultAppendArgs);
-            return;
+            return false;
         }
 
-        // 3. 提取 java 路径
-        var match = Regex.Match(startLine, @"^(\s*)(""[^""]*""|\S+)\s*");
-        if (!match.Success)
+        // 3. 提取 java 路径及其后的参数
+        var (javaPath, rest) = SplitJavaPath(startLine);
+        if (string.IsNullOrWhiteSpace(javaPath))
         {
             _output.Write(_serverName, LogLevel.Warning, "无法解析 Java 路径，使用默认参数");
             _jvmArgs.AddRange(fileJvmArgs.Count > 0 ? fileJvmArgs : DefaultJvmArgs);
             _appendArgs.AddRange(DefaultAppendArgs);
-            return;
+            return false;
         }
-        _javaPath = match.Groups[2].Value.Trim('"');
+        _javaPath = javaPath;
 
         // 4. 拆分其余 token；@user_jvm_args.txt 交由文件承载，不再重复出现在命令行
-        var rest = startLine.Substring(match.Length);
         var tokens = Tokenize(rest)
             .Where(t => !t.Equals("@" + JvmArgsFileName, StringComparison.OrdinalIgnoreCase))
             .ToList();
@@ -122,12 +129,15 @@ public class ServerArgument
         var jarIndex = FindJarIndex(tokens);
         if (jarIndex < 0)
         {
-            _output.Write(_serverName, LogLevel.Warning, "未找到 -jar 参数，使用默认");
+            // 识别不出“启动 Java 的那一段”（既无 -jar 也无 @xxx_args.txt）时，
+            // 只把解析结果留在内存里作为默认值，**不改写**用户的启动脚本——
+            // 否则会把自定义脚本覆盖成 "{java} @user_jvm_args.txt -jar server.jar ..."
+            _output.Write(_serverName, LogLevel.Warning, "未找到 -jar 参数，使用默认参数并保持脚本原样");
             _jvmArgs.Clear();
             _jvmArgs.AddRange(fileJvmArgs.Count > 0 ? fileJvmArgs : DefaultJvmArgs);
             _appendArgs.Clear();
             _appendArgs.AddRange(tokens.Count > 0 ? tokens : DefaultAppendArgs);
-            return;
+            return false;
         }
 
         // 6. jarArgs：-jar x.jar 视为整体，否则是单个 token（如 @.../win_args.txt）
@@ -158,6 +168,90 @@ public class ServerArgument
 
         if (_jvmArgs.Count == 0)
             _jvmArgs.AddRange(DefaultJvmArgs);
+
+        return true;
+    }
+
+    /// <summary>
+    /// 在启动脚本中定位启动命令行。
+    /// 先排除批处理/shell 的指令与注释行，再优先取真正启动 Java 的行
+    /// （含 -jar 或 @xxx_args.txt），否则退化为首个候选行。
+    /// 这样无论 javaPath 是 "java"、带引号的绝对路径，还是含空格且未加引号的路径，都能被识别。
+    /// </summary>
+    /// <param name="lines">脚本的全部行。</param>
+    /// <returns>启动命令行；识别不出时返回 null。</returns>
+    private static string? FindStartLine(IEnumerable<string> lines)
+    {
+        var candidates = new List<string>();
+        foreach (var raw in lines)
+        {
+            var line = raw.Trim();
+            if (line.Length == 0 || IsShellDirective(line)) continue;
+            candidates.Add(line);
+        }
+
+        if (candidates.Count == 0) return null;
+
+        return candidates.FirstOrDefault(LooksLikeJavaCommand) ?? candidates[0];
+    }
+
+    /// <summary>
+    /// 判断一行是否为批处理 / shell 的指令或注释行（这类行不会启动 Java）。
+    /// </summary>
+    /// <param name="line">已去除首尾空白的脚本行。</param>
+    /// <returns>是指令/注释行时返回 true。</returns>
+    private static bool IsShellDirective(string line)
+    {
+        if (line.StartsWith('@') || line.StartsWith('#') || line.StartsWith(':') || line.StartsWith('%'))
+            return true;
+
+        string[] keywords = { "rem ", "set ", "echo ", "pause", "cd ", "if ", "goto ", "exit", "title ", "call " };
+        return keywords.Any(k => line.StartsWith(k, StringComparison.OrdinalIgnoreCase));
+    }
+
+    /// <summary>
+    /// 判断一行是否像真正的 Java 启动命令（包含 -jar 或 @xxx_args.txt 之类的参数文件）。
+    /// </summary>
+    /// <param name="line">脚本行。</param>
+    /// <returns>像启动命令时返回 true。</returns>
+    private static bool LooksLikeJavaCommand(string line)
+        => line.Contains("-jar", StringComparison.OrdinalIgnoreCase)
+           || Regex.IsMatch(line, @"@\S*\.txt");
+
+    /// <summary>
+    /// 从启动行中切出 Java 路径与其余参数，覆盖三种写法：
+    /// <c>"C:\Program Files\...\java.exe" @user_jvm_args.txt ...</c>（带引号）、
+    /// <c>java -Xmx4G -jar server.jar</c>（裸 java）、
+    /// <c>C:\Program Files\...\java.exe @user_jvm_args.txt ...</c>（旧版本写出的未加引号含空格路径）。
+    /// </summary>
+    /// <param name="startLine">启动命令行。</param>
+    /// <returns>Java 路径与剩余参数字符串。</returns>
+    private static (string Java, string Args) SplitJavaPath(string startLine)
+    {
+        var line = startLine.Trim();
+
+        // 情形一：以引号包裹的路径开头
+        if (line.StartsWith('"'))
+        {
+            var end = line.IndexOf('"', 1);
+            if (end > 1)
+                return (line[1..end].Trim(), line[(end + 1)..].Trim());
+        }
+
+        // 情形二：参数从第一个以 - 或 @ 开头的 token 开始，其之前的整体就是 Java 路径
+        // （据此可正确还原未加引号、但路径中含空格的写法，而不是被空格截断）
+        for (var i = 1; i < line.Length; i++)
+        {
+            if (!char.IsWhiteSpace(line[i - 1])) continue;   // 只在 token 起始处判断
+            if (line[i] == '-' || line[i] == '@')
+                return (line[..i].Trim().Trim('"'), line[i..].Trim());
+        }
+
+        // 情形三：整行没有可识别的参数，取第一个 token 作为路径
+        var spaceIndex = line.IndexOfAny(new[] { ' ', '\t' });
+        return spaceIndex < 0
+            ? (line.Trim('"'), string.Empty)
+            : (line[..spaceIndex].Trim('"'), line[spaceIndex..].Trim());
     }
 
     /// <summary>
@@ -436,7 +530,7 @@ public class ServerArgument
         try
         {
             var jvmContent = GetJvmArgs();
-            var scriptContent = $"{_javaPath} @{JvmArgsFileName} {_jarArgs} {GetAppendArgs()}".Trim();
+            var scriptContent = $"{QuoteIfNeeded(_javaPath)} @{JvmArgsFileName} {_jarArgs} {GetAppendArgs()}".Trim();
 
             // 内容未变化时不写盘，避免无谓地刷新文件时间戳
             var changed = WriteIfChanged(JvmArgsFilePath, jvmContent);
@@ -464,5 +558,21 @@ public class ServerArgument
 
         File.WriteAllText(path, content, Encoding.UTF8);
         return true;
+    }
+
+    /// <summary>
+    /// 按命令行惯例处理 Java 路径：含空白（或已带引号）时用双引号包裹，
+    /// 避免 <c>C:\Program Files\...</c> 这类路径在脚本里被空格截断，
+    /// 也保证下一次解析仍能把它当作一个整体读回。
+    /// </summary>
+    /// <param name="value">Java 路径。</param>
+    /// <returns>写入脚本的路径文本。</returns>
+    private static string QuoteIfNeeded(string value)
+    {
+        var trimmed = value.Trim();
+        if (trimmed.Length >= 2 && trimmed.StartsWith('"') && trimmed.EndsWith('"'))
+            return trimmed;
+
+        return trimmed.Any(char.IsWhiteSpace) ? $"\"{trimmed}\"" : trimmed;
     }
 }

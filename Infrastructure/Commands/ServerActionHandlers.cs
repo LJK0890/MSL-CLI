@@ -253,9 +253,11 @@ internal static class ServerSendAllHandler
         if (string.IsNullOrWhiteSpace(command))
             return Fail(output, "用法: $server send all <命令>");
 
-        var running = args.ServerRegistry.GetRunningServers();
+        var running = ServerLock.SkipLocked(
+            args.ServerRegistry.GetRunningServers(), args.ConfigStore.LoadConfig(), out var skipped);
+
         if (running.Count == 0)
-            return Fail(output, "没有正在运行的服务器");
+            return Fail(output, "没有正在运行的服务器" + ServerLock.SkippedNote(skipped));
 
         int success = 0, fail = 0;
         foreach (var sm in running)
@@ -272,7 +274,7 @@ internal static class ServerSendAllHandler
             }
         }
 
-        var msg = $"发送完成: 成功 {success}, 失败 {fail}";
+        var msg = $"发送完成: 成功 {success}, 失败 {fail}" + ServerLock.SkippedNote(skipped);
         output?.Write("Command", LogLevel.Success, msg);
         return new CommandResult(1, msg);
     }
@@ -306,12 +308,14 @@ internal static class ServerStopHandler
         if (parts.Length == 0)
             return Fail(output, "用法: $server stop <服务器名|all> [-f]");
 
+        // -f 在 all 与单服务器两种形式下都要解析（否则 $server stop all -f 会被静默忽略）
+        var force = parts.Skip(1).Any(p => p.Equals("-f", StringComparison.OrdinalIgnoreCase));
+
         // all：停止全部
         if (parts[0].Equals("all", StringComparison.OrdinalIgnoreCase))
-            return await ServerStopAllHandler.RunAsync(args, output);
+            return await ServerStopAllHandler.RunAsync(args, output, force);
 
         var name = parts[0];
-        var force = parts.Length > 1 && parts[1].Equals("-f", StringComparison.OrdinalIgnoreCase);
 
         var server = args.ServerRegistry.GetServer(name);
         if (server == null)
@@ -345,13 +349,20 @@ internal static class ServerStopAllHandler
     /// </summary>
     /// <param name="args">命令参数，包含服务器注册表。</param>
     /// <param name="output">输出写入器，可为 null。</param>
+    /// <param name="force">是否强制停止（跳过优雅关闭流程）。</param>
     /// <returns>命令执行结果。</returns>
-    public static async Task<CommandResult> RunAsync(CommandArgs args, IOutputWriter? output)
+    public static async Task<CommandResult> RunAsync(CommandArgs args, IOutputWriter? output, bool force = false)
     {
         try
         {
-            await args.ServerRegistry.StopAllAsync();
-            var msg = "所有服务器已停止";
+            // 只停未锁定且未停止的服务器；锁定服务器一律跳过
+            var targets = ServerLock.SkipLocked(
+                args.ServerRegistry.GetRunningServers(), args.ConfigStore.LoadConfig(), out var skipped);
+
+            foreach (var server in targets)
+                await server.StopAsync(force);
+
+            var msg = $"已停止 {targets.Count} 台服务器" + ServerLock.SkippedNote(skipped);
             output?.Write("Command", LogLevel.Success, msg);
             return new CommandResult(1, msg);
         }

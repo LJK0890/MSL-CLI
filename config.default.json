@@ -6,7 +6,8 @@
   "AgentPermissions": {
     "AllowList": [],
     "AlwaysAskCommands": [
-      "$exec"
+      "$app exec",
+      "$server del"
     ]
   }
 }

@@ -76,8 +76,19 @@ public class ServerProcess : IServerProcess
             Exited?.Invoke(this, EventArgs.Empty);
         };
 
+        // 先启动再赋值：启动失败时 _process 必须保持为 null，
+        // 否则后续任何成员访问（HasExited/Kill）都会抛 “No process is associated with this object”
+        try
+        {
+            p.Start();
+        }
+        catch
+        {
+            try { p.Dispose(); } catch { /* 忽略释放异常 */ }
+            throw;
+        }
+
         _process = p;
-        p.Start();
         p.BeginOutputReadLine();
         p.BeginErrorReadLine();
     }
@@ -95,18 +106,43 @@ public class ServerProcess : IServerProcess
 
     /// <summary>
     /// 终止进程；可选择是否连同整个进程树一起终止。
+    /// 进程未启动或已退出时静默返回（<c>Process.Kill</c> 在这种情况下会抛异常，
+    /// 一旦异常逃出会让调用方的状态机永久停在 Stopping）。
     /// </summary>
     /// <param name="entireProcessTree">为 true 时连子进程一并终止。</param>
-    public void Kill(bool entireProcessTree) => _process?.Kill(entireProcessTree);
+    public void Kill(bool entireProcessTree)
+    {
+        var process = _process;
+        if (process == null) return;
+
+        try
+        {
+            if (!process.HasExited)
+                process.Kill(entireProcessTree);
+        }
+        catch (InvalidOperationException) { /* 进程对象已释放或从未启动 */ }
+        catch (System.ComponentModel.Win32Exception) { /* 已退出或无权终止 */ }
+        catch (NotSupportedException) { /* 平台不支持 */ }
+    }
 
     /// <summary>
     /// 向进程标准输入写入一行文本（用于向服务器控制台发送命令）。
+    /// 进程在检查与写入之间退出时会抛 IOException，这里一律按“未写入”处理，
+    /// 避免异常逃出调用方。
     /// </summary>
     /// <param name="text">要写入的命令文本。</param>
     public async Task WriteStandardInputAsync(string text)
     {
-        if (_process is { HasExited: false })
-            await _process.StandardInput.WriteLineAsync(text);
+        var process = _process;
+        if (process is not { HasExited: false }) return;
+
+        try
+        {
+            await process.StandardInput.WriteLineAsync(text);
+        }
+        catch (IOException) { /* 管道已断开（进程刚退出） */ }
+        catch (ObjectDisposedException) { /* 进程已释放（派生自 InvalidOperationException，需先捕获） */ }
+        catch (InvalidOperationException) { /* 进程对象状态无效 */ }
     }
 
     /// <summary>

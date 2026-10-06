@@ -1,15 +1,43 @@
 using System.Collections;
+using System.Globalization;
 using System.Reflection;
+using System.Text.Json;
 using MSL_CLI.Core.Domain;
 
 namespace MSL_CLI.Infrastructure.Commands;
 
 /// <summary>
-/// 应用配置的点号路径读写辅助类，供 $appconfigget / $appconfigset 共用。
+/// 应用配置的点号路径读写辅助类，供 $app cfg 与 $ai cfg 共用。
 /// 支持属性与字典混合嵌套，例如 AIConfigs.default.Url。
 /// </summary>
 internal static class AppConfigPath
 {
+    /// <summary>格式化复杂配置值时使用的 JSON 选项。</summary>
+    private static readonly JsonSerializerOptions IndentedJson = new() { WriteIndented = true };
+
+    /// <summary>
+    /// 把配置值格式化为可读文本：字符串、布尔与数字原样输出，集合与复杂对象输出缩进 JSON，
+    /// 避免打印出 <c>System.Collections.Generic.Dictionary`2[…]</c> 或类型全名。
+    /// </summary>
+    /// <param name="value">配置路径对应的值。</param>
+    /// <returns>可直接打印的文本。</returns>
+    public static string FormatValue(object? value)
+    {
+        switch (value)
+        {
+            case null:
+                return "(null)";
+            case string s:
+                return s;
+            case bool b:
+                return b ? "true" : "false";
+            case int or long or short or byte or uint or ulong or ushort or sbyte or float or double or decimal:
+                return ((IFormattable)value).ToString(null, CultureInfo.InvariantCulture);
+            default:
+                return JsonSerializer.Serialize(value, IndentedJson);
+        }
+    }
+
     /// <summary>
     /// 通过点号路径设置值，支持属性与字典混合。路径中间缺失的字典键会自动创建。
     /// 单段路径表示直接设置配置根对象的属性，例如 DefaultAIConfig、EnableAI。
@@ -83,7 +111,7 @@ internal static class AppConfigPath
             object? converted;
             try
             {
-                converted = Convert.ChangeType(value, valueType);
+                converted = Convert.ChangeType(value, valueType, CultureInfo.InvariantCulture);
             }
             catch (Exception ex)
             {
@@ -98,7 +126,7 @@ internal static class AppConfigPath
         if (targetProp == null)
             throw new Exception($"类型 '{currentType.FullName}' 中找不到属性 '{lastSegment}'");
 
-        var convertedValue = Convert.ChangeType(value, targetProp.PropertyType);
+        var convertedValue = Convert.ChangeType(value, targetProp.PropertyType, CultureInfo.InvariantCulture);
         targetProp.SetValue(current, convertedValue);
     }
 
@@ -204,19 +232,19 @@ internal static class AppConfigPath
 }
 
 /// <summary>
-/// 属性信息 LRU 缓存，容量上限由 <see cref="AppConfig.MaxPropertyCacheLength"/> 控制。
+/// 属性信息 LRU 缓存，用于避免每次都反射查找属性。
 /// </summary>
 internal static class PropertyCache
 {
+    /// <summary>缓存容量上限；属性元数据数量很少，128 足够容纳全部配置路径。</summary>
+    private const int MaxCapacity = 128;
+
     /// <summary>缓存项：属性信息与其在访问顺序链表中的节点。</summary>
     private static readonly Dictionary<string, (PropertyInfo Prop, LinkedListNode<string> Node)> _cache = new();
     /// <summary>访问顺序链表，用于淘汰最久未使用的键。</summary>
     private static readonly LinkedList<string> _accessOrder = new();
     /// <summary>缓存访问锁。</summary>
     private static readonly object _lock = new();
-
-    /// <summary>缓存容量上限，由 AppConfig.MaxPropertyCacheLength 控制，未配置时默认 128。</summary>
-    private static int MaxCapacity => AppConfig.MaxPropertyCacheLength > 0 ? AppConfig.MaxPropertyCacheLength : 128;
 
     /// <summary>
     /// 获取或添加属性元数据，缓存已满时淘汰最久未使用项。

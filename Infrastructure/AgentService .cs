@@ -17,8 +17,10 @@ namespace MSL_CLI.Infrastructure;
 /// </summary>
 public class OpenAiAgentService : IAgentService, IDisposable
 {
-    /// <summary>AI 配置字典，键为配置名称。</summary>
-    private readonly Dictionary<string, AIConfig> _configs;
+    /// <summary>AI 配置字典，键为配置名称。可通过 <see cref="ReloadConfig"/> 整体替换。</summary>
+    private volatile Dictionary<string, AIConfig> _configs;
+    /// <summary>全局 AI 开关（AppConfig.EnableAI），随 <see cref="ReloadConfig"/> 热更新。</summary>
+    private volatile bool _enableAI = true;
     /// <summary>服务提供者，用于按需解析命令执行器等依赖。</summary>
     private readonly IServiceProvider _serviceProvider;
     /// <summary>输出写入器，用于记录日志信息。</summary>
@@ -31,6 +33,11 @@ public class OpenAiAgentService : IAgentService, IDisposable
     private readonly IServerRegistry _serverRegistry;
     /// <summary>配置存储，供命令的参数校验钩子使用。</summary>
     private readonly IConfigurationStore _configStore;
+
+    /// <summary>逐条消息的固定格式开销，估算 token 时按每条累加。</summary>
+    private const int MessageOverheadTokens = 4;
+    /// <summary>三个工具定义的 JSON Schema 所占上下文开销（估算 token 数）。</summary>
+    private const int ToolSchemaReserveTokens = 512;
 
     // ---------- 队列相关 ----------
     /// <summary>
@@ -85,6 +92,7 @@ public class OpenAiAgentService : IAgentService, IDisposable
         IConfigurationStore configStore)
     {
         _configs = config.AIConfigs;
+        _enableAI = config.EnableAI;
         _serviceProvider = serviceProvider;
         _output = output;
         _commandParser = commandParser;
@@ -97,6 +105,11 @@ public class OpenAiAgentService : IAgentService, IDisposable
     }
 
     // ---------- 实现 IAgentService ----------
+    /// <summary>
+    /// 当前已登记的 AI 配置名集合（每次读取时从最新的配置字典快照生成）。
+    /// </summary>
+    public IReadOnlyCollection<string> ConfigNames => _configs.Keys.ToList();
+
     /// <summary>
     /// 发起一次普通聊天请求，返回所用模型名称与响应文本。
     /// 若对应配置未启用聊天功能，则不调用模型，直接返回提示文本。
@@ -111,6 +124,11 @@ public class OpenAiAgentService : IAgentService, IDisposable
         (IServer, string)? source = null)
     {
         var cfg = GetConfig(configName);
+
+        // 全局开关：EnableAI 为 false 时任何 AI 调用都不发起
+        if (!_enableAI)
+            return (cfg.Model, "AI 功能已在配置中关闭（EnableAI = false），可用 $ai cfg set EnableAI true 打开");
+
         // 检查该配置是否启用了聊天功能
         if (!cfg.EnableChat)
             return (cfg.Model, "该配置未启用聊天功能");
@@ -143,6 +161,11 @@ public class OpenAiAgentService : IAgentService, IDisposable
         (IServer, string)? source = null)
     {
         var cfg = GetConfig(configName);
+
+        // 全局开关：EnableAI 为 false 时任何 AI 调用都不发起
+        if (!_enableAI)
+            return (cfg.Model, "AI 功能已在配置中关闭（EnableAI = false），可用 $ai cfg set EnableAI true 打开");
+
         // 检查该配置是否启用了智能体功能
         if (!cfg.EnableAgent)
             return (cfg.Model, "该配置未启用智能体功能");
@@ -159,6 +182,21 @@ public class OpenAiAgentService : IAgentService, IDisposable
         };
         await _channel.Writer.WriteAsync(req, _cts.Token);
         return await req.Tcs.Task;
+    }
+
+    // ---------- 配置热更新 ----------
+    /// <summary>
+    /// 用新的应用配置替换内存中的 AI 实例集合。
+    /// 后台消费者每轮按引用读取配置字典，这里整体替换引用，
+    /// 使 $ai add / $ai rm、$app cfg 修改、$app reload 等操作无需重启即可生效。
+    /// </summary>
+    /// <param name="newConfig">新的应用配置。</param>
+    public void ReloadConfig(AppConfig newConfig)
+    {
+        _configs = newConfig?.AIConfigs ?? new Dictionary<string, AIConfig>();
+        _enableAI = newConfig?.EnableAI ?? true;
+        _output.Write("AI", LogLevel.Info,
+            $"AI 配置已重新加载（{_configs.Count} 个实例，EnableAI={_enableAI}）");
     }
 
     // ---------- 后台消费者 ----------
@@ -179,27 +217,31 @@ public class OpenAiAgentService : IAgentService, IDisposable
                 }
 
                 // 记录请求来源和消息
+                // 来源标注会被拼在指令开头，提示词依赖它区分“控制台（完全权限）”与
+                // “游戏内玩家（需管理员校验）”，因此格式必须与提示词约定完全一致，
+                // 并用空格与指令正文分隔，避免模型把配置名/首个单词误认成玩家名。
                 var source = req.Source;
-                string sourceInfo;
+                string sourceLabel;
                 if (source == null)
                 {
-                    sourceInfo = "来自控制台";
+                    sourceLabel = "[来自控制台]";
                 }
                 else
                 {
                     (IServer sourceServer, string sourcePlayer) = source.Value;
-                    sourceInfo = req.Source != null ? $"来自服务器 '{sourceServer.Name}' 的 '{sourcePlayer}'" : "来自控制台";
+                    sourceLabel = $"[来自服务器 '{sourceServer.Name}' 的玩家 '{sourcePlayer}']";
                 }
-                
+
                 _output.Write($"AI/{req.ConfigName}", LogLevel.Debug,
-                    $"处理请求 [{(req.IsAgent ? "Agent" : "Chat")}] {sourceInfo}: {req.Message}");
+                    $"处理请求 [{(req.IsAgent ? "Agent" : "Chat")}] {sourceLabel} {req.Message}");
 
                 try
                 {
                     // 按请求类型分派到智能体或聊天执行逻辑
+                    var instruction = $"{sourceLabel} {req.Message}";
                     var result = req.IsAgent
-                        ? await ExecuteAgentAsync(req, sourceInfo + req.Message)
-                        : await ExecuteChatAsync(req, sourceInfo + req.Message);
+                        ? await ExecuteAgentAsync(req, instruction)
+                        : await ExecuteChatAsync(req, instruction);
 
                     req.Tcs.TrySetResult(result);
                 }
@@ -223,7 +265,8 @@ public class OpenAiAgentService : IAgentService, IDisposable
 
     // ---------- 实际执行逻辑（拆分自原方法）----------
     /// <summary>
-    /// 执行一次普通聊天调用：创建客户端并请求模型完成对话。
+    /// 执行一次普通聊天调用：创建客户端，以“系统提示词 + 用户消息”请求模型完成对话。
+    /// 聊天模式不挂载工具，模型只回答问题、不会执行命令。
     /// </summary>
     /// <param name="req">发起本次调用的请求。</param>
     /// <param name="message">聊天消息（已包含来源信息前缀）。</param>
@@ -233,8 +276,17 @@ public class OpenAiAgentService : IAgentService, IDisposable
         var cfg = GetConfig(req.ConfigName);
         var client = CreateClient(cfg);
         var chat = client.GetChatClient(cfg.Model);
-        var result = await chat.CompleteChatAsync(message);
-        return (cfg.Model, result.Value.Content[0].Text);
+
+        // 组装系统提示与用户消息
+        var messages = new List<ChatMessage>
+        {
+            ChatMessage.CreateSystemMessage(GetChatPrompt(req.ConfigName)),
+            ChatMessage.CreateUserMessage(message)
+        };
+
+        var result = await chat.CompleteChatAsync(messages, cancellationToken: req.CancellationToken);
+        // 内容可能为空（模型拒答、只返回工具调用等），直接索引会抛 ArgumentOutOfRangeException
+        return (cfg.Model, result.Value.Content.Count > 0 ? result.Value.Content[0].Text : string.Empty);
     }
 
     /// <summary>
@@ -288,6 +340,11 @@ public class OpenAiAgentService : IAgentService, IDisposable
             ChatMessage.CreateUserMessage(instruction)
         };
 
+        // 执行过程的文本记录，与 messages[2..] 一一对应；上下文压缩时交给模型总结
+        var history = new StringBuilder();
+        // 上下文超限但没有可压缩历史时只提示一次，避免每轮刷屏
+        bool lengthWarned = false;
+
         // 将工具列表注册到完成请求选项中
         var options = new ChatCompletionOptions();
         foreach (var t in tools) options.Tools.Add(t);
@@ -296,16 +353,41 @@ public class OpenAiAgentService : IAgentService, IDisposable
         int maxIter = cfg.MaxIterations > 0 ? cfg.MaxIterations : 16;
         for (int i = 0; i < maxIter; i++)
         {
+            // 上下文过长时先压缩历史再请求，避免超出模型上下文窗口
+            if (cfg.MaxContextTokens > 0)
+            {
+                int estimated = EstimateContextTokens(messages);
+                if (estimated > cfg.MaxContextTokens)
+                {
+                    // 历史部分占比过小时，超长主要来自系统提示词或指令本身，压缩收益有限
+                    if (EstimateHistoryTokens(messages) < cfg.MaxContextTokens / 4)
+                    {
+                        if (!lengthWarned)
+                        {
+                            lengthWarned = true;
+                            _output.Write($"AI/{cfg.Model}", LogLevel.Warning,
+                                $"上下文估算 {estimated} tokens 已超过阈值 {cfg.MaxContextTokens}，" +
+                                "但没有足够的历史可供压缩，继续请求可能超出模型窗口");
+                        }
+                    }
+                    else
+                    {
+                        await CompressContextAsync(chat, cfg, messages, history, req);
+                    }
+                }
+            }
+
             // 请求模型完成一次对话
-            var response = await chat.CompleteChatAsync(messages, options);
+            var response = await chat.CompleteChatAsync(messages, options, req.CancellationToken);
             // 模型直接给出最终回答，结束循环
             if (response.Value.FinishReason == ChatFinishReason.Stop)
-                return (cfg.Model, response.Value.Content[0].Text);
+                return (cfg.Model, response.Value.Content.Count > 0 ? response.Value.Content[0].Text : string.Empty);
 
             // 模型请求调用工具：将助手消息与工具结果追加到对话历史后继续迭代
             if (response.Value.FinishReason == ChatFinishReason.ToolCalls)
             {
                 messages.Add(ChatMessage.CreateAssistantMessage(response.Value));
+                AppendAssistantTranscript(history, response.Value);
                 foreach (var tc in response.Value.ToolCalls)
                 {
                     // 仅处理函数类型调用
@@ -324,6 +406,7 @@ public class OpenAiAgentService : IAgentService, IDisposable
                             _output.Write($"AI/{cfg.Model}", LogLevel.Error, toolResult);
                         }
                         messages.Add(ChatMessage.CreateToolMessage(tc.Id, toolResult));
+                        history.AppendLine($"工具 {tc.FunctionName} 返回: {toolResult}");
                     }
                 }
                 continue;
@@ -332,6 +415,195 @@ public class OpenAiAgentService : IAgentService, IDisposable
             break;
         }
         return (cfg.Model, "达到最大迭代次数");
+    }
+
+    // ---------- 上下文长度控制（自动压缩）----------
+    /// <summary>
+    /// 压缩智能体的执行历史：把此前的工具调用与返回交给模型总结成一段摘要，
+    /// 再用摘要替换 messages 中除“系统提示 + 原始指令”之外的对话记录，从而缩短上下文。
+    /// 摘要按阈值比例设上限，使压缩后的长度远低于触发条件，避免每轮反复压缩。
+    /// </summary>
+    /// <param name="chat">当前使用的聊天客户端。</param>
+    /// <param name="cfg">当前 AI 配置，提供阈值与压缩提示词。</param>
+    /// <param name="messages">会被就地改写的对话消息列表。</param>
+    /// <param name="history">与 messages 对应的执行过程文本记录，压缩后同步替换为摘要。</param>
+    /// <param name="req">发起本次调用的请求，提供取消令牌。</param>
+    private async Task CompressContextAsync(
+        ChatClient chat, AIConfig cfg, List<ChatMessage> messages, StringBuilder history, Request req)
+    {
+        int before = EstimateContextTokens(messages);
+        var transcript = history.ToString();
+
+        // 摘要字符上限：按阈值比例收敛，同时给出下限避免摘要被压得过短而丢失关键信息
+        int summaryCharLimit = SummaryCharLimit(cfg.MaxContextTokens);
+        var summary = await SummarizeHistoryAsync(chat, cfg, transcript, req);
+        if (summary.Length > summaryCharLimit)
+            summary = summary[..summaryCharLimit] + "…";
+
+        // 用摘要替换除“系统提示 + 原始指令”以外的全部对话记录
+        messages.RemoveRange(2, messages.Count - 2);
+        messages.Add(ChatMessage.CreateSystemMessage(
+            "以下是本次任务此前执行过程的摘要，请据此继续，不要重复已完成的步骤：\n" + summary));
+
+        // 记录同步换血：后续再次压缩时会把先前的摘要一并纳入
+        history.Clear();
+        history.AppendLine("【历史摘要】").AppendLine(summary);
+
+        _output.Write($"AI/{cfg.Model}", LogLevel.Success,
+            $"上下文已压缩: {before} -> {EstimateContextTokens(messages)} 估算 tokens（摘要 {summary.Length} 字符）");
+    }
+
+    /// <summary>
+    /// 调用模型把执行记录总结为摘要；模型调用失败或未返回文本时退化为截断压缩，
+    /// 保证压缩不会中断任务。
+    /// </summary>
+    /// <param name="chat">当前使用的聊天客户端。</param>
+    /// <param name="cfg">当前 AI 配置，提供压缩提示词。</param>
+    /// <param name="transcript">待压缩的执行记录文本。</param>
+    /// <param name="req">发起本次调用的请求，提供取消令牌。</param>
+    /// <returns>压缩后的摘要文本。</returns>
+    private async Task<string> SummarizeHistoryAsync(ChatClient chat, AIConfig cfg, string transcript, Request req)
+    {
+        // 压缩请求本身也必须放进模型窗口：记录过长时只保留尾部（预算约为阈值的一半），
+        // 否则摘要调用会因输入超长直接失败
+        int transcriptBudget = TranscriptCharBudget(cfg.MaxContextTokens);
+        if (EstimateTokens(transcript) > transcriptBudget)
+            transcript = TruncateTranscript(transcript, transcriptBudget);
+
+        var prompt = string.IsNullOrWhiteSpace(cfg.ContextCompressPrompt)
+            ? AIConfig.DefaultCompressPrompt
+            : cfg.ContextCompressPrompt;
+
+        // 模板未包含占位符时把执行记录追加到末尾，保证记录一定被送入模型
+        prompt = prompt.Contains("{transcript}")
+            ? prompt.Replace("{transcript}", transcript)
+            : prompt + "\n\n执行记录：\n" + transcript;
+
+        try
+        {
+            var response = await chat.CompleteChatAsync(
+                new List<ChatMessage> { ChatMessage.CreateUserMessage(prompt) },
+                cancellationToken: req.CancellationToken);
+
+            var text = response.Value.Content.Count > 0 ? response.Value.Content[0].Text : null;
+            if (!string.IsNullOrWhiteSpace(text))
+                return text.Trim();
+
+            _output.Write($"AI/{cfg.Model}", LogLevel.Warning, "上下文压缩未返回文本，改用截断压缩");
+        }
+        catch (Exception ex)
+        {
+            // 压缩失败不应中断任务：退化为截断压缩，并保留原因便于排查
+            _output.Write($"AI/{cfg.Model}", LogLevel.Error, $"上下文压缩失败，改用截断压缩: {ex.Message}");
+        }
+
+        return TruncateTranscript(transcript, SummaryCharLimit(cfg.MaxContextTokens));
+    }
+
+    /// <summary>
+    /// 截断压缩兜底：保留执行记录的尾部（最近的步骤最关键），并按字符上限裁剪。
+    /// </summary>
+    /// <param name="transcript">待压缩的执行记录文本。</param>
+    /// <param name="charLimit">允许保留的最大字符数。</param>
+    /// <returns>裁剪后的记录文本。</returns>
+    private static string TruncateTranscript(string transcript, int charLimit)
+        => transcript.Length <= charLimit ? transcript : "（更早的记录已省略）\n" + transcript[^charLimit..];
+
+    /// <summary>
+    /// 根据压缩阈值计算摘要允许的最大字符数（约为阈值的八分之一，且不低于 400）。
+    /// </summary>
+    /// <param name="maxContextTokens">上下文压缩阈值。</param>
+    /// <returns>摘要字符上限。</returns>
+    private static int SummaryCharLimit(int maxContextTokens) => Math.Max(400, maxContextTokens / 8);
+
+    /// <summary>
+    /// 根据压缩阈值计算送入模型的执行记录允许的最大字符数（约为阈值的一半，且不低于 2000）。
+    /// 中日韩字符按 1 字符 ≈ 1 token 估算，该预算可保证压缩请求本身不超过阈值。
+    /// </summary>
+    /// <param name="maxContextTokens">上下文压缩阈值。</param>
+    /// <returns>执行记录字符上限。</returns>
+    private static int TranscriptCharBudget(int maxContextTokens) => Math.Max(2000, maxContextTokens / 2);
+
+    /// <summary>
+    /// 把一次工具调用轮次的助手输出追加到执行记录中。
+    /// </summary>
+    /// <param name="history">执行记录缓冲区。</param>
+    /// <param name="completion">模型返回的完成结果。</param>
+    private static void AppendAssistantTranscript(StringBuilder history, ChatCompletion completion)
+    {
+        var text = completion.Content.Count > 0 ? completion.Content[0].Text : null;
+        if (!string.IsNullOrWhiteSpace(text))
+            history.AppendLine($"助手: {text.Trim()}");
+
+        foreach (var tc in completion.ToolCalls)
+        {
+            if (tc.Kind == ChatToolCallKind.Function)
+                history.AppendLine($"助手调用工具 {tc.FunctionName}({tc.FunctionArguments})");
+        }
+    }
+
+    /// <summary>
+    /// 估算整个上下文（含工具定义与逐条消息开销）的 token 数。
+    /// </summary>
+    /// <param name="messages">对话消息列表。</param>
+    /// <returns>估算的 token 数。</returns>
+    private static int EstimateContextTokens(IReadOnlyList<ChatMessage> messages)
+    {
+        int total = ToolSchemaReserveTokens;
+        for (int i = 0; i < messages.Count; i++)
+            total += MessageOverheadTokens + EstimateMessageTokens(messages[i]);
+        return total;
+    }
+
+    /// <summary>
+    /// 估算除“系统提示 + 原始指令”之外的历史部分所占的 token 数。
+    /// </summary>
+    /// <param name="messages">对话消息列表。</param>
+    /// <returns>估算的 token 数。</returns>
+    private static int EstimateHistoryTokens(IReadOnlyList<ChatMessage> messages)
+    {
+        int total = 0;
+        for (int i = 2; i < messages.Count; i++)
+            total += MessageOverheadTokens + EstimateMessageTokens(messages[i]);
+        return total;
+    }
+
+    /// <summary>
+    /// 估算单条消息文本内容所占的 token 数。
+    /// </summary>
+    /// <param name="message">对话消息。</param>
+    /// <returns>估算的 token 数。</returns>
+    private static int EstimateMessageTokens(ChatMessage message)
+    {
+        int total = 0;
+        foreach (var part in message.Content)
+            total += EstimateTokens(part.Text);
+        return total;
+    }
+
+    /// <summary>
+    /// 粗略估算文本的 token 数：中日韩字符按 1 字符 ≈ 1 token，其余字符按 4 字符 ≈ 1 token。
+    /// 不引入分词器依赖，仅用于判断是否触发压缩，误差由阈值留白吸收。
+    /// </summary>
+    /// <param name="text">待估算的文本。</param>
+    /// <returns>估算的 token 数。</returns>
+    private static int EstimateTokens(string? text)
+    {
+        if (string.IsNullOrEmpty(text)) return 0;
+
+        int cjk = 0, other = 0;
+        foreach (var ch in text)
+        {
+            if ((ch >= 0x2E80 && ch <= 0x9FFF) ||   // 中日韩汉字与部首
+                (ch >= 0xAC00 && ch <= 0xD7AF) ||   // 韩文音节
+                (ch >= 0xF900 && ch <= 0xFAFF) ||   // 兼容汉字
+                (ch >= 0xFF00 && ch <= 0xFFEF))     // 全角字符
+                cjk++;
+            else
+                other++;
+        }
+
+        return cjk + (other + 3) / 4;
     }
 
     // ---------- 辅助方法（与原相同）----------
@@ -513,23 +785,42 @@ public class OpenAiAgentService : IAgentService, IDisposable
     private string GetAgentPrompt(string configName)
     {
         var cfg = _configs.GetValueOrDefault(configName);
-        // 以内置默认提示词作为兜底
-        var systemPrompt = new AIConfig().AgentPrompt;
-        if (cfg == null) return systemPrompt;
 
-        var promptTemplate = cfg.AgentPrompt;
-        if (string.IsNullOrWhiteSpace(promptTemplate))
-            return systemPrompt;
+        // 配置缺失或提示词留空时回退到内置默认；无论走哪条路都必须填充 {commandList}，
+        // 否则模型看到的是字面量占位符（内置默认提示词本身就含该占位符）。
+        var promptTemplate = string.IsNullOrWhiteSpace(cfg?.AgentPrompt)
+            ? new AIConfig().AgentPrompt
+            : cfg!.AgentPrompt;
 
-        // 生成按命令名排序的命令描述列表
-        var commandDescriptions = _commandParser.GetCommandDescriptions();
-        var commandList = string.Join("\n", commandDescriptions
+        return promptTemplate.Replace("{commandList}", BuildCommandList());
+    }
+
+    /// <summary>
+    /// 生成聊天模式的系统提示词：将命令描述列表注入配置的提示词模板。
+    /// 聊天模式不挂载工具，提示词只用于约束回答风格与范围。
+    /// </summary>
+    /// <param name="configName">AI 配置名称。</param>
+    /// <returns>最终的系统提示词文本。</returns>
+    private string GetChatPrompt(string configName)
+    {
+        var cfg = _configs.GetValueOrDefault(configName);
+
+        // 同 GetAgentPrompt：内置默认提示词同样含 {commandList}，必须显式替换
+        var promptTemplate = string.IsNullOrWhiteSpace(cfg?.ChatPrompt)
+            ? new AIConfig().ChatPrompt
+            : cfg!.ChatPrompt;
+
+        return promptTemplate.Replace("{commandList}", BuildCommandList());
+    }
+
+    /// <summary>
+    /// 构造按命令名排序的命令描述列表，供系统提示词的 {commandList} 占位符使用。
+    /// </summary>
+    /// <returns>每行一条的命令摘要文本。</returns>
+    private string BuildCommandList()
+        => string.Join("\n", _commandParser.GetCommandDescriptions()
             .OrderBy(k => k.Key)
             .Select(kvp => $"- {kvp.Key}：{kvp.Value}"));
-
-        // 将命令列表注入模板的 {commandList} 占位符
-        return promptTemplate.Replace("{commandList}", commandList);
-    }
 
     /// <summary>
     /// 将输出写入内存缓冲区的 IOutputWriter 实现，用于捕获命令执行输出。
@@ -566,7 +857,17 @@ public class OpenAiAgentService : IAgentService, IDisposable
             _processorTask.Wait(TimeSpan.FromSeconds(5));
         }
         catch { /* 忽略超时 */ }
-        _cts.Dispose();
+
+        // 消费者退出后仍留在队列里的请求永远不会再被处理：
+        // 必须显式取消它们的任务源，否则 await req.Tcs.Task 的调用方（含 fire-and-forget 的
+        // 游戏内触发任务）会永久挂起
         _channel.Writer.TryComplete();
+        while (_channel.Reader.TryRead(out var pending))
+            pending.Tcs.TrySetCanceled();
+
+        // 只有在消费者确实已结束的情况下才释放取消令牌源；
+        // 否则仍在进行的模型调用可能会碰到已释放的 token
+        if (_processorTask.IsCompleted)
+            _cts.Dispose();
     }
 }

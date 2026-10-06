@@ -88,7 +88,7 @@ public static class CommandInvocationValidator
     /// <summary>
     /// 取出用于授权匹配的“命令 + 子动作”范围。
     /// 命令实现 <see cref="IArgValidatingCommand"/> 时由其自行判定；
-    /// 否则回退为仅命令名（配合 <see cref="AgentPermissions.PermissionKey"/> 使用）。
+    /// 否则回退为仅命令名。
     /// </summary>
     /// <param name="parser">命令解析器，可为 null。</param>
     /// <param name="command">原始命令文本。</param>
@@ -104,38 +104,6 @@ public static class CommandInvocationValidator
 
         var scope = validating.GetPermissionScope(ExtractRawArgs(command), context);
         return string.IsNullOrWhiteSpace(scope) ? name : scope;
-    }
-
-    /// <summary>
-    /// 判断给定范围是否命中已有条目：先按范围比较，范围未命中时再退化为命令名比较，
-    /// 使旧配置里"整条命令"形式的条目在子动作变化后依然有效。
-    /// </summary>
-    /// <param name="pattern">白名单中的条目。</param>
-    /// <param name="scope">本次调用的授权范围（命令 + 子动作）。</param>
-    /// <param name="command">本次调用的完整命令文本。</param>
-    /// <param name="normalizedCommand">规范化后的完整命令文本。</param>
-    /// <returns>命中时返回 true。</returns>
-    public static bool MatchesScope(string pattern, string scope, string command, string normalizedCommand)
-    {
-        var p = AgentPermissions.Normalize(pattern);
-        if (p.Length == 0) return false;
-
-        // 历史条目一：以 * 结尾 → 整串前缀匹配
-        if (p.EndsWith('*'))
-            return normalizedCommand.StartsWith(p[..^1].TrimEnd(), StringComparison.OrdinalIgnoreCase);
-
-        var s = AgentPermissions.Normalize(scope);
-
-        // 按“命令 + 子动作”范围匹配
-        if (s.Length > 0 && string.Equals(p, s, StringComparison.OrdinalIgnoreCase))
-            return true;
-
-        // 按命令名匹配（含旧配置中带完整参数的条目）
-        var name = AgentPermissions.GetCommandName(command);
-        if (p.Contains(' '))
-            return string.Equals(p, normalizedCommand, StringComparison.OrdinalIgnoreCase);
-
-        return string.Equals(p.TrimStart('$'), name.TrimStart('$'), StringComparison.OrdinalIgnoreCase);
     }
 
     /// <summary>

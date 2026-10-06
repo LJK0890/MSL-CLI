@@ -72,9 +72,15 @@ internal static class ServerBackupCommand
         Directory.CreateDirectory(backupsDir);
 
         // 以时间戳命名备份文件，可选附加备注
-        string timestamp = DateTime.Now.ToString("yyyyMMdd_HHmmss");
-        string backupName = string.IsNullOrEmpty(remark) ? timestamp : $"{timestamp}_{remark}";
+        // 时间戳用不变文化：某些区域设置使用非公历日历，ToString("yyyyMMdd") 会给出错误年份
+        string timestamp = DateTime.Now.ToString("yyyyMMdd_HHmmss", System.Globalization.CultureInfo.InvariantCulture);
+        string backupName = string.IsNullOrEmpty(remark) ? timestamp : $"{timestamp}_{SanitizeRemark(remark)}";
         string zipPath = Path.Combine(backupsDir, backupName + ".zip");
+
+        // 同一秒内重复备份（或备注被清理后重名）时自动加序号，避免覆盖/失败
+        var suffix = 1;
+        while (File.Exists(zipPath))
+            zipPath = Path.Combine(backupsDir, $"{backupName}({suffix++}).zip");
 
         try
         {
@@ -91,5 +97,22 @@ internal static class ServerBackupCommand
             output?.Write("Command", LogLevel.Error, msg);
             return new CommandResult(0, msg);
         }
+    }
+
+    /// <summary>
+    /// 清理备注文本，使其可以安全地作为文件名片段：
+    /// 非法文件名字符替换为下划线，并去掉首尾的空白与点号（Windows 不允许结尾的点号）。
+    /// </summary>
+    /// <param name="remark">用户输入的备注。</param>
+    /// <returns>可安全用于文件名的备注；清理后为空时返回 "note"。</returns>
+    private static string SanitizeRemark(string remark)
+    {
+        var invalid = Path.GetInvalidFileNameChars();
+        var sb = new System.Text.StringBuilder(remark.Length);
+        foreach (var c in remark)
+            sb.Append(Array.IndexOf(invalid, c) >= 0 ? '_' : c);
+
+        var cleaned = sb.ToString().Trim().Trim('.', ' ');
+        return cleaned.Length == 0 ? "note" : cleaned;
     }
 }
