@@ -9,6 +9,9 @@
   </PropertyGroup>
 
   <ItemGroup>
+    <!-- Program.cs / CommandParser.cs 直接使用 DI 容器，显式声明依赖，
+         避免上游包调整依赖图时突然编译失败（版本与当前解析结果一致） -->
+    <PackageReference Include="Microsoft.Extensions.DependencyInjection" Version="9.0.0" />
     <PackageReference Include="McQuery.Net" Version="2.0.0" />
     <PackageReference Include="OpenAI" Version="2.12.0" />
     <PackageReference Include="System.Configuration.ConfigurationManager" Version="10.0.10" />

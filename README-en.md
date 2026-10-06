@@ -59,19 +59,17 @@ MSL-CLI/
 │   │   └── LogLevel.cs            # Log levels
 │   ├── Ports/                     # Port (interface) definitions
 │   │   ├── ICommand / ICommandExecutor / ICommandParser
-│   │   ├── IServer / IServerRegistry / IServerProcess / IServerBuffer
+│   │   ├── IServer / IServerRegistry / IServerProcess
 │   │   ├── IInputReader / IOutputWriter
 │   │   ├── IConfigurationStore / IAgentService
 │   │   └── ...
 │   └── UseCases/                  # Use cases
-│       ├── CommandExecutor.cs     # Command dispatch & execution
-│       └── ServerOrchestrator.cs  # Server orchestration
+│       └── CommandExecutor.cs     # Command dispatch & execution
 ├── Infrastructure/                # Infrastructure layer (adapters & command implementations)
 │   ├── ServerManager.cs           # IServer impl: process lifecycle, output buffer, AI trigger
 │   ├── ServerProcess.cs           # System process wrapper
 │   ├── ServerRegistry.cs          # Server registry
 │   ├── ServerArgument.cs          # Launcher argument parsing & persistence
-│   ├── ServerBuffer.cs            # Output buffer
 │   ├── CommandParser.cs           # Reflection-based command registration
 │   ├── FileConfigurationStore.cs  # JSON config persistence
 │   ├── CompositeOutputWriter.cs   # Multiplexed output (console + file)

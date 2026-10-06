@@ -61,19 +61,17 @@ MSL-CLI/
 │   │   └── LogLevel.cs            # 日志级别
 │   ├── Ports/                     # 端口（接口）定义
 │   │   ├── ICommand / ICommandExecutor / ICommandParser
-│   │   ├── IServer / IServerRegistry / IServerProcess / IServerBuffer
+│   │   ├── IServer / IServerRegistry / IServerProcess
 │   │   ├── IInputReader / IOutputWriter
 │   │   ├── IConfigurationStore / IAgentService
 │   │   └── ...
 │   └── UseCases/                  # 用例
-│       ├── CommandExecutor.cs     # 命令分发执行
-│       └── ServerOrchestrator.cs  # 服务器编排
+│       └── CommandExecutor.cs     # 命令分发执行
 ├── Infrastructure/                # 基础设施层（适配器、命令实现）
 │   ├── ServerManager.cs           # IServer 实现：进程生命周期、输出缓冲、AI 触发
 │   ├── ServerProcess.cs           # 系统进程封装
 │   ├── ServerRegistry.cs          # 服务器注册表
 │   ├── ServerArgument.cs          # 启动脚本参数解析与持久化
-│   ├── ServerBuffer.cs            # 输出缓冲区
 │   ├── CommandParser.cs           # 命令反射注册
 │   ├── FileConfigurationStore.cs  # JSON 配置读写
 │   ├── CompositeOutputWriter.cs   # 多路输出（控制台 + 文件）
