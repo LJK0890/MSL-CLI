@@ -16,6 +16,6 @@ Provides a unified AI entry `$ai` (`chat` / `agent` / `default`) and a `DefaultA
 
 ---
 
-**技术栈 / Stack**：C# / .NET 10.0 · Microsoft.Extensions.DependencyInjection 9.0.0 · System.Configuration.ConfigurationManager 10.0.10（Query 协议与 OpenAI 兼容客户端为内置实现 / Query protocol and OpenAI-compatible client are built in）
+**技术栈 / Stack**：C# / .NET 10.0 · Microsoft.Extensions.DependencyInjection 9.0.0（Query 协议与 OpenAI 兼容客户端为内置实现，无其他第三方包 / Query protocol and OpenAI-compatible client are built in, no other third-party packages）
 
 **License**：[MIT](LICENSE.txt)

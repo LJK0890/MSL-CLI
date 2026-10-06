@@ -4,7 +4,7 @@
 
 MSL-CLI 采用 **整洁架构（Clean Architecture）/ 端口-适配器（Ports & Adapters）** 组织代码，通过依赖注入（DI）组装模块。它可以统一管理多台服务器（启动、停止、发送命令、查询状态、批量停止/广播）、备份世界文件、读取服务器日志缓冲区，还可以让 AI（OpenAI 兼容接口）辅助管理与服务器交互。
 
-- **技术栈**：C# / .NET 10.0、Microsoft.Extensions.DependencyInjection、System.Configuration.ConfigurationManager 10.0.10（Query 协议与 OpenAI 兼容客户端均为内置实现，不依赖第三方包）
+- **技术栈**：C# / .NET 10.0、Microsoft.Extensions.DependencyInjection 9.0.0（Query 协议与 OpenAI 兼容客户端均为内置实现，无其他第三方包）
 - **协议**：MIT License
 
 > 其他语言版本：English — [README-en.md](README-en.md)

@@ -12,9 +12,9 @@
     <!-- Program.cs / CommandParser.cs 直接使用 DI 容器，显式声明依赖，
          避免上游包调整依赖图时突然编译失败（版本与当前解析结果一致）。
          Query 协议与 OpenAI 兼容客户端已改为内置实现（Infrastructure/Query、
-         Infrastructure/OpenAi），因此不再引用 McQuery.Net 与 OpenAI 包。 -->
+         Infrastructure/OpenAi），因此不再引用 McQuery.Net 与 OpenAI 包；
+         System.Configuration.ConfigurationManager 全仓库无人使用，已一并移除。 -->
     <PackageReference Include="Microsoft.Extensions.DependencyInjection" Version="9.0.0" />
-    <PackageReference Include="System.Configuration.ConfigurationManager" Version="10.0.10" />
   </ItemGroup>
 
   <ItemGroup>
