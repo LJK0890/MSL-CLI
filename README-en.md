@@ -4,7 +4,7 @@ A command-line tool for managing multiple Minecraft servers, with built-in AI ch
 
 MSL-CLI is organized using **Clean Architecture / Ports & Adapters** and assembled with dependency injection (DI). It manages multiple servers through one entry point (start, stop, send commands, query status, batch stop/broadcast), backs up world files, reads server log buffers, and lets an AI (OpenAI-compatible API) help you operate your servers.
 
-- **Stack**: C# / .NET 10.0, Microsoft.Extensions.DependencyInjection, OpenAI SDK 2.12.0, McQuery.Net 2.0.0, System.Configuration.ConfigurationManager 10.0.10
+- **Stack**: C# / .NET 10.0, Microsoft.Extensions.DependencyInjection, System.Configuration.ConfigurationManager 10.0.10 (the Query protocol and the OpenAI-compatible client are built in — no third-party packages)
 - **License**: MIT
 
 > 其他语言版本：简体中文 — [README-ch.md](README-ch.md)
@@ -76,6 +76,10 @@ MSL-CLI/
 │   ├── FileOutputWriter.cs        # File logging
 │   ├── AgentService .cs           # OpenAI chat / agent service
 │   ├── AgentPermissionGateway.cs  # Operator authorization for agent commands
+│   ├── OpenAi/                    # Built-in OpenAI-compatible client (Chat Completions + tool calls)
+│   │   └── OpenAiChatClient.cs
+│   ├── Query/                     # Built-in Minecraft Query protocol client (UDP handshake + full stat)
+│   │   └── MinecraftQueryClient.cs
 │   └── Commands/                  # All `$`-prefixed command implementations
 └── CLI/                           # CLI adapters (console IO)
     ├── ConsoleOutputWriter.cs

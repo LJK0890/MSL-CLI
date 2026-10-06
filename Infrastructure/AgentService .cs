@@ -1,12 +1,10 @@
-using System.ClientModel;
 using System.Text;
 using System.Text.Json;
 using System.Threading.Channels;
 using Microsoft.Extensions.DependencyInjection;
 using MSL_CLI.Core.Domain;
 using MSL_CLI.Core.Ports;
-using OpenAI;
-using OpenAI.Chat;
+using MSL_CLI.Infrastructure.OpenAi;
 
 namespace MSL_CLI.Infrastructure;
 

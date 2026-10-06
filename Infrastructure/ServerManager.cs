@@ -1,9 +1,9 @@
 using System.Diagnostics;
 using System.Text;
 using System.Text.Json;
-using McQuery.Net;
 using MSL_CLI.Core.Domain;
 using MSL_CLI.Core.Ports;
+using MSL_CLI.Infrastructure.Query;
 
 namespace MSL_CLI.Infrastructure;
 
