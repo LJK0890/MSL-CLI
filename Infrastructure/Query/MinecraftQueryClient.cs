@@ -12,8 +12,15 @@ namespace MSL_CLI.Infrastructure.Query;
 // McQueryClient / GetFullStatusAsync），使 ServerManager 的实现无需改动。
 //
 // 协议两步（均为 UDP，服务器需在 server.properties 中 enable-query=true）：
-//   1. 握手：FE FD 09 + 4 字节会话号  ->  09 + 会话号(ASCII) + 00
-//   2. 查询：FE FD 00 + 4 字节会话号 + 4 字节 0  ->  00 + 会话号 + "splitnum\0\x80\0" + KV 段
+//   1. 握手：FE FD 09 + 4 字节会话号
+//        ->  09 + 会话号回显(4~N 字节，服务端按 UTF-8 字符串回写) + 十进制 challenge + 00
+//   2. 查询：FE FD 00 + 4 字节会话号 + 4 字节 challenge(大端) + 4 字节 0（共 15 字节）
+//        ->  00 + 会话号 + "splitnum\0\x80\0" + KV 段 + 玩家段
+//
+// 两个容易踩的坑（均由服务端 QueryThreadGs4 强制校验）：
+//   * challenge 必须原样回填到查询报文的第 7~10 字节，填 0 会被判为 Invalid challenge
+//     直接丢弃，客户端只能等到超时；
+//   * 查询报文长度必须恰好为 15 字节，否则服务端只回基础状态（rules，无版本/玩家段）。
 // ---------------------------------------------------------------------------
 
 /// <summary>
@@ -80,8 +87,10 @@ public sealed class McQueryClient : IDisposable
     {
         ArgumentNullException.ThrowIfNull(endpoint);
 
-        // 会话号同时用于握手与查询，服务端会原样回显
-        int sessionId = Random.Shared.Next(1, int.MaxValue);
+        // 会话号同时用于握手与查询；服务端会把收到的 4 字节当作 UTF-8 字符串回显，
+        // 因此这里生成“可打印且非数字”的字节，保证回显长度固定为 4 且不会与
+        // 紧随其后的十进制 challenge 粘连
+        int sessionId = CreateSessionId();
 
         using var udp = new UdpClient(endpoint.AddressFamily);
         udp.Connect(endpoint);
@@ -91,12 +100,66 @@ public sealed class McQueryClient : IDisposable
         if (handshake.Length < 1 || handshake[0] != 0x09)
             throw new InvalidDataException("Minecraft Query 握手响应无效");
 
-        await SendAsync(udp, BuildStatRequest(sessionId), cancellationToken);
+        // 服务端在握手响应中下发一次性 challenge，查询报文必须原样回填，
+        // 否则服务端会按 Invalid challenge 丢弃请求（表现为一直收不到响应直到超时）
+        int challenge = ParseChallenge(handshake);
+
+        await SendAsync(udp, BuildStatRequest(sessionId, challenge), cancellationToken);
         var response = await ReceiveAsync(udp, cancellationToken);
         if (response.Length < 1 || response[0] != 0x00)
             throw new InvalidDataException("Minecraft Query 查询响应无效");
 
         return ParseFullStatus(response);
+    }
+
+    /// <summary>
+    /// 生成握手会话号：4 个字节全部取“可打印且非数字”的 ASCII 字符。
+    /// 取值受限的原因见 <see cref="GetFullStatusAsync"/> 与 <see cref="ParseChallenge"/>：
+    /// 服务端把会话号按 UTF-8 字符串回显，字节非法时会替换成 U+FFFD 而使回显变长；
+    /// 若回显的最后一个字节恰好是数字，从末尾向前解析 challenge 时就会把它一并读进去。
+    /// </summary>
+    /// <returns>会话号（按大端序解释这 4 个字节）。</returns>
+    private static int CreateSessionId()
+    {
+        // 0x21~0x2F 与 0x3A~0x7E 共 15 + 69 = 84 个候选值
+        const int Range = 84;
+        Span<byte> bytes = stackalloc byte[4];
+        for (int i = 0; i < bytes.Length; i++)
+        {
+            int value = Random.Shared.Next(Range);
+            bytes[i] = (byte)(value < 15 ? 0x21 + value : 0x3A + (value - 15));
+        }
+
+        return (bytes[0] << 24) | (bytes[1] << 16) | (bytes[2] << 8) | bytes[3];
+    }
+
+    /// <summary>
+    /// 从握手响应中解析服务端下发的 challenge。
+    /// 响应格式为 <c>09</c> + 会话号回显 + 十进制 challenge + <c>\0</c>；
+    /// 会话号回显是服务端把收到的 4 字节按 UTF-8 字符串回写的结果，长度不固定
+    /// （含非法字节时会被替换成 U+FFFD 而变长），因此这里从末尾向前读取数字段。
+    /// </summary>
+    /// <param name="handshake">握手响应报文。</param>
+    /// <returns>挑战值。</returns>
+    private static int ParseChallenge(byte[] handshake)
+    {
+        int end = handshake.Length - 1;
+        // 跳过结尾的 \0 分隔符
+        while (end >= 0 && handshake[end] == 0) end--;
+
+        int start = end;
+        while (start >= 0 && handshake[start] is >= (byte)'0' and <= (byte)'9') start--;
+
+        int length = end - start;
+        if (length <= 0)
+            throw new InvalidDataException("Minecraft Query 握手响应中缺少 challenge");
+
+        if (!int.TryParse(Encoding.ASCII.GetString(handshake, start + 1, length),
+                System.Globalization.NumberStyles.Integer,
+                System.Globalization.CultureInfo.InvariantCulture, out var challenge))
+            throw new InvalidDataException("Minecraft Query 握手响应中的 challenge 无法解析");
+
+        return challenge;
     }
 
     /// <summary>
@@ -115,18 +178,22 @@ public sealed class McQueryClient : IDisposable
     }
 
     /// <summary>
-    /// 构造查询报文：FE FD 00 + 4 字节会话号（大端）+ 4 字节零填充。
+    /// 构造完整状态查询报文：FE FD 00 + 4 字节会话号（大端）+ 4 字节 challenge（大端）
+    /// + 4 字节零填充，共 15 字节。
+    /// 长度必须恰好为 15，否则服务端只返回基础状态（rules）而不含版本与玩家段。
     /// </summary>
     /// <param name="sessionId">会话号。</param>
+    /// <param name="challenge">握手阶段下发的挑战值。</param>
     /// <returns>报文内容。</returns>
-    private static byte[] BuildStatRequest(int sessionId)
+    private static byte[] BuildStatRequest(int sessionId, int challenge)
     {
-        var buffer = new byte[11];
+        var buffer = new byte[15];
         buffer[0] = 0xFE;
         buffer[1] = 0xFD;
         buffer[2] = 0x00;
         WriteInt32BigEndian(buffer, 3, sessionId);
-        // 末尾 4 字节保持为 0
+        WriteInt32BigEndian(buffer, 7, challenge);
+        // 末尾 4 字节保持为 0（填充，用于把长度凑到 15）
         return buffer;
     }
 
@@ -199,7 +266,9 @@ public sealed class McQueryClient : IDisposable
             values[key] = value;
         }
 
-        // 玩家段：可选的 0x01 标记 + "player_\0" + 玩家名（各自以 \0 结尾）+ 结尾空串
+        // 玩家段：可选的 0x01 标记 + "player_\0" + 一个空串 + 玩家名（各自以 \0 结尾）+ 结尾空串。
+        // 原版在这里会多写一个 0x00（即 "player_\0\0"），若把紧随其后的空串当作结束标记，
+        // 玩家列表会永远为空；因此改为读到报文末尾并只收集非空项，兼容省略该填充的实现。
         if (offset < response.Length && response[offset] == 0x01) offset++;
         var players = new List<string>();
         if (offset < response.Length)
@@ -210,15 +279,16 @@ public sealed class McQueryClient : IDisposable
                 while (offset < response.Length)
                 {
                     var player = ReadNullTerminatedString(response, ref offset);
-                    if (player.Length == 0) break;
-                    players.Add(player);
+                    if (player.Length > 0) players.Add(player);
                 }
             }
         }
 
         return new McQueryFullStatus
         {
-            Motd = GetValue(values, "motd"),
+            // 原版服务端把 MOTD 放在 hostname 键下（并非 motd），保留 motd 作为回退，
+            // 以兼容部分代理/插件实现
+            Motd = GetValue(values, "hostname") ?? GetValue(values, "motd"),
             Version = GetValue(values, "version"),
             GameType = GetValue(values, "gametype"),
             Map = GetValue(values, "map"),
